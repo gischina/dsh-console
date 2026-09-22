@@ -1,0 +1,14 @@
+# Issue 模板配置
+# Copyright 2026 liwei (易智瑞西安) <liwei@geoscene.cn>
+# SPDX-License-Identifier: Apache-2.0
+#
+# 关掉"空白 Issue"：让每份报告都带上自检输出与环境信息，否则来回问版本要花好几天。
+# 安全问题不给表单，直接从下面第一条链接走邮件通道 —— 避免漏洞细节被公开在 Issue 里。
+blank_issues_enabled: false
+contact_links:
+  - name: 安全漏洞（请勿开公开 Issue）
+    url: https://github.com/gischina/dsh-console/blob/main/SECURITY.md
+    about: 漏洞请按 SECURITY.md 的邮箱通道私下报告，不要贴在 Issue 里。
+  - name: 部署问题 / 使用疑问
+    url: https://github.com/gischina/dsh-console/blob/main/docs/deploy.md
+    about: 装不上、连不上 DSH、端口被占这类问题，先看部署说明；仍解决不了再开 Issue。

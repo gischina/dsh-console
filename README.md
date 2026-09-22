@@ -1,5 +1,11 @@
 # DSH Console · 易智瑞西安时空智能应用工作台
 
+[![CI](https://github.com/gischina/dsh-console/actions/workflows/ci.yml/badge.svg)](https://github.com/gischina/dsh-console/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Version](https://img.shields.io/badge/version-0.1.5--rc.2-orange.svg)](CHANGELOG.md)
+[![Node](https://img.shields.io/badge/node-%E2%89%A5%2018-339933.svg)](https://nodejs.org)
+[![Dependencies](https://img.shields.io/badge/dependencies-0-success.svg)](#)
+
 **DSH Console 是一个 DSH 控制台**，把 DSH 的会话、技能、MCP、插件、模型、设置、
 凭据、子代理等能力做成一个本地网页，打开 `http://127.0.0.1:3081` 即可操作。
 **它不是替代 DSH，而是 DSH 的增强**：内容全部由 DSH 实时提供，DSH 不停跑，它就有内容。
@@ -378,8 +384,12 @@ dsh-console/
 ├─ SECURITY.md           # 安全漏洞报告通道（邮件，勿公开 Issue）
 ├─ CODE_OF_CONDUCT.md    # 社区行为准则（Contributor Covenant 2.1）
 ├─ .gitattributes        # 保住两个 .cmd 的 CRLF + 纯 ASCII（跨平台 git 检出不被改坏）
+├─ .editorconfig         # 编辑器约定（.cmd 必须 CRLF；md 保留行尾空格）
 ├─ .github/
-│  └─ ISSUE_TEMPLATE/    # Issue 模板（bug 报告强制带自检输出；功能建议）
+│  ├─ ISSUE_TEMPLATE/    # Issue 模板（bug 报告强制带自检输出；功能建议；config.yml 关空白 Issue 并引导安全漏洞走私密通道）
+│  ├─ PULL_REQUEST_TEMPLATE.md  # PR 自查清单（零依赖铁律、回归项、.cmd 编码、app.js 铁律）
+│  └─ workflows/
+│     └─ ci.yml          # 持续集成：只跑不需要 DSH 的那部分（语法 / 渲染回归 / 打包校验 / 起服务烟测）
 ├─ dist.cmd              # Windows 双击生产打包（等价于 node tools/make-dist.mjs）
 ├─ server.cjs            # 唯一后端：静态托管 + 反向代理 + WS 桥 + 本地接口（零第三方依赖）
 ├─ public/

@@ -1,0 +1,37 @@
+# DSH Console — 编辑器统一约定
+# Copyright 2026 liwei (易智瑞西安) <liwei@geoscene.cn>
+# SPDX-License-Identifier: Apache-2.0
+#
+# 这里只约束「换行符 / 缩进 / 尾部空格」这类会污染 diff 的格式问题。
+# 与 .gitattributes 的分工：那个管 git 检出时给什么换行，这个管编辑器保存时写什么换行。
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+# ⚠️ Windows 批处理必须是 CRLF，且内容必须是纯 ASCII。
+#    cmd.exe 会按字节切行，非 ASCII 字节（尤其中文）会被切错位置，
+#    表现为乱码或“命令莫名截断”。编辑器保存时不要把它改成 LF。
+[*.{cmd,bat}]
+end_of_line = crlf
+
+# 缩进用 2 空格；这些文件里没有需要保留的制表符
+[*.{js,cjs,mjs,json,yml,yaml,html,css,md}]
+indent_style = space
+indent_size = 2
+
+# Markdown 行尾的两个空格代表「强制换行」，别被编辑器吃掉
+[*.md]
+trim_trailing_whitespace = false
+
+# 产物与截图不做格式干预
+[dist/**]
+insert_final_newline = false
+[*.png]
+insert_final_newline = false
