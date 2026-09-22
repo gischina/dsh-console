@@ -2,20 +2,24 @@
 # Copyright 2026 liwei (易智瑞西安) <liwei@geoscene.cn>
 # SPDX-License-Identifier: Apache-2.0
 #
-# 这个工作流只跑「不需要 DSH 就能跑」的那部分检查，思路是：
+# 这个工作流只跑「不需要 DSH 就能判定」的检查。判断依据是实测出来的，不是猜的：
 #
-#   ✅ 能在 CI 跑（本工作流覆盖）
+#   ✅ 能在 CI 跑（本工作流覆盖，全部是硬性判定）
 #      · 语法检查：server.cjs / public/app.js 能否被解析
-#      · tools/render-all.mjs   —— 纯本地：用 DOM stub 跑完 18 页渲染，273 项断言，失败会 exit 1
-#      · tools/make-dist.mjs    —— 打包完整性：文件齐不齐、有没有夹带本机状态文件与令牌
-#      · 起服务烟测             —— 没有 DSH 时 server.cjs 也应能启动并正常返回首页
+#      · 打包完整性：make-dist 的文件清单 + 无本机状态文件 + 无令牌/本机路径泄漏
+#      · 起服务烟测：没有 DSH 时 server.cjs 也应能启动，且本地接口正常响应
+#      · 入库守卫：本机状态文件与内部资料绝不能被提交
 #
-#   ❌ 不能在 CI 跑（需要真机环境，请本地跑）
-#      · tools/test-api.mjs     —— 要活的 DSH 会话与令牌，无令牌时上游回 401
-#      · tools/page-audit.mjs   —— B 部分（端点探测）要控制台代理到真 DSH；CI 里只作参考、不判定成败
+#   ❌ 不能在 CI 跑（必须真机 + 跑着 dsh web）
+#      · tools/render-all.mjs   —— 它把 app.js 里的 fetch 转发到 127.0.0.1:3081，
+#                                  依赖控制台在跑；而页面里的数据加载还要活的 DSH 会话
+#      · tools/page-audit.mjs   —— B 部分（端点探测）同上
+#      · tools/test-api.mjs     —— 要真 DSH 会话与令牌
 #      · tools/cdp-chat-check.mjs —— 要本机 Edge 的 CDP 端口
 #
-# 所以：CI 绿 ≠ 全部回归通过。发版前请在跑着 `dsh web` 的机器上按 README「回归与排障」完整跑一遍。
+# ⚠️ 所以：**CI 绿 ≠ 全部回归通过**。发版前请在跑着 `dsh web` 的机器上按 README
+#    「回归与排障」一节完整跑一遍，认准每个脚本末行的 `DONE fails=0`。
+#
 # 项目零第三方依赖、无构建步骤，因此这里不需要 npm install。
 
 name: CI
@@ -36,7 +40,7 @@ concurrency:
 
 jobs:
   check:
-    name: 静态回归（Node ${{ matrix.node }}）
+    name: 静态检查（Node ${{ matrix.node }}）
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -59,13 +63,28 @@ jobs:
           node --check public/app.js
           echo "两个入口文件均可正常解析"
 
-      - name: 18 页渲染回归（273 项断言）
-        run: node tools/render-all.mjs
+      - name: 守卫：本机状态文件与内部资料不得入库
+        run: |
+          fail=0
+          for f in plugins.json mcp-tools.json dsh-config.json ui-prefs.yaml dist; do
+            if git ls-files --error-unmatch "$f" >/dev/null 2>&1; then
+              echo "::error::$f 被提交进了仓库 —— 本机运行状态不属于源码（dsh-config.json 还含访问令牌）"
+              fail=1
+            fi
+          done
+          for f in docs/chat-parity.md tools/dump-endpoints.mjs; do
+            if git ls-files --error-unmatch "$f" >/dev/null 2>&1; then
+              echo "::error::$f 被提交进了仓库 —— 内部资料不随开源仓库分发"
+              fail=1
+            fi
+          done
+          [ "$fail" = "0" ] && echo "入库守卫通过：无本机状态文件、无内部资料"
+          exit $fail
 
       - name: 打包完整性校验（不混淆、不压缩）
         run: node tools/make-dist.mjs --no-mangle --no-zip
 
-      - name: 起服务烟测（无 DSH 时也应能启动并返回首页）
+      - name: 起服务烟测（无 DSH 时也应能启动，且本地接口正常响应）
         run: |
           CONSOLE_PORT=3099 node server.cjs > console.log 2>&1 &
           SRV=$!
@@ -74,27 +93,30 @@ jobs:
             if curl -sf http://127.0.0.1:3099/ -o home.html; then ok=1; break; fi
             sleep 0.5
           done
-          kill $SRV 2>/dev/null || true
-          echo "--- 控制台启动日志 ---"
-          cat console.log
           if [ "$ok" != "1" ]; then
+            echo "--- 控制台启动日志 ---"; cat console.log
+            kill $SRV 2>/dev/null || true
             echo "::error::控制台在无 DSH 环境下未能响应首页 —— 部署方第一次启动就会卡在这里"
             exit 1
           fi
-          grep -q "时空智能应用工作台" home.html \
-            || { echo "::error::首页返回了内容，但不是控制台页面"; exit 1; }
-          echo "烟测通过：首页正常返回"
 
-      - name: 页面端点审计（需要真 DSH，仅作参考，不判定成败）
-        continue-on-error: true
-        run: |
-          CONSOLE_PORT=3099 node server.cjs > /dev/null 2>&1 &
-          SRV=$!
-          sleep 3
-          node tools/page-audit.mjs > /dev/null 2>&1 || true
+          echo "首页 HTTP 200（$(wc -c < home.html) 字节）"
+          grep -q "时空智能应用工作台" home.html \
+            || { kill $SRV 2>/dev/null || true; echo "::error::首页返回了内容，但不是控制台页面"; exit 1; }
+
+          # 这三个本地接口不依赖 DSH，必须在无 DSH 时也能正常返回 —— 部署方首次启动就会用到
+          for p in /api/local/dsh /api/local/prefs /api/local/plugins; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:3099$p")
+            echo "  $p → HTTP $code"
+            if [ "$code" != "200" ]; then
+              kill $SRV 2>/dev/null || true
+              echo "::error::$p 在无 DSH 环境下返回 $code（应为 200）"
+              exit 1
+            fi
+          done
+
           kill $SRV 2>/dev/null || true
-          echo "--- page-audit 结果尾部（CI 里会因缺少 DSH 令牌而出现失败，属预期）---"
-          tail -3 tools/page-audit-out.txt || true
+          echo "烟测通过：服务能启动，首页与本地接口均正常"
 
       - name: 失败时留一份控制台日志
         if: failure()

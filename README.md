@@ -389,7 +389,7 @@ dsh-console/
 │  ├─ ISSUE_TEMPLATE/    # Issue 模板（bug 报告强制带自检输出；功能建议；config.yml 关空白 Issue 并引导安全漏洞走私密通道）
 │  ├─ PULL_REQUEST_TEMPLATE.md  # PR 自查清单（零依赖铁律、回归项、.cmd 编码、app.js 铁律）
 │  └─ workflows/
-│     └─ ci.yml          # 持续集成：只跑不需要 DSH 的那部分（语法 / 渲染回归 / 打包校验 / 起服务烟测）
+│     └─ ci.yml          # 持续集成：只跑不需要 DSH 就能判定的（语法 / 打包完整性 / 起服务烟测 / 入库守卫）
 ├─ dist.cmd              # Windows 双击生产打包（等价于 node tools/make-dist.mjs）
 ├─ server.cjs            # 唯一后端：静态托管 + 反向代理 + WS 桥 + 本地接口（零第三方依赖）
 ├─ public/

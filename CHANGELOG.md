@@ -8,6 +8,22 @@
 
 ## [Unreleased]
 
+### 新增
+- `.github/PULL_REQUEST_TEMPLATE.md`：PR 自查清单（零依赖铁律、回归项、
+  `.cmd` 编码、`app.js` 铁律、本机状态文件不得入库）
+- `.github/ISSUE_TEMPLATE/config.yml`：关闭空白 Issue，把安全漏洞引导到
+  `SECURITY.md` 的邮件通道（避免漏洞细节被公开贴在 Issue 里）
+- `.github/workflows/ci.yml`：持续集成，只跑**不需要 DSH 就能判定**的检查
+  （语法检查 / 打包完整性 / 无 DSH 起服务烟测 / 入库守卫）
+- `.editorconfig`：`.cmd` 必须 CRLF、Markdown 保留行尾空格
+- README 徽章：CI / 许可 / 版本 / Node 版本 / 零依赖
+
+### 说明
+- **CI 的覆盖边界**（实测得出，不是估计）：`render-all.mjs` 会把页面里的请求
+  转发到 `127.0.0.1:3081`、`page-audit.mjs` 的端点探测要活的 DSH 会话、
+  `test-api.mjs` 要真令牌、`cdp-chat-check.mjs` 要本机 Edge 的 CDP ——
+  这四项都无法在 CI 里判定，发版前仍需在跑着 `dsh web` 的机器上完整跑一遍
+
 ### 变更
 - 移除内部资料 `docs/chat-parity.md`（上游对话流对照）与 `tools/dump-endpoints.mjs`
   （DSH 端点导出），并加入 `.gitignore`，不再随仓库分发

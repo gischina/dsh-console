@@ -21,9 +21,11 @@
    node tools/page-audit.mjs
    node tools/render-all.mjs
    ```
-   推上去之后 GitHub Actions 会自动跑**不需要 DSH 的那部分**（语法检查、渲染回归、
-   打包校验、起服务烟测）。**CI 绿不等于全绿** —— `test-api.mjs` 与 `page-audit.mjs`
-   的端点探测要真机上的 `dsh web`，CI 里跑不了，请自己确认末行是 `DONE fails=0`。
+   推上去之后 GitHub Actions 会自动跑**不需要 DSH 的那部分**（语法检查、
+   打包完整性校验、起服务烟测、入库守卫）。
+   **CI 绿不等于全绿** —— `test-api.mjs` / `page-audit.mjs` / `render-all.mjs`
+   都要真机上跑着 `dsh web`（`render-all` 会把页面里的请求转发到 `127.0.0.1:3081`），
+   CI 里跑不了，请自己确认末行是 `DONE fails=0`。
 4. 两个 `.cmd` 必须保持**纯 ASCII + CRLF**（原因见 README 目录树一节的警告）。
 5. 改动 `public/app.js` 的交互逻辑时，注意 README 里「改 app.js 的铁律」
    一节列出的约束（paintOnly 渲染、DOM_OWNED 登记等）。
