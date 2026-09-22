@@ -235,11 +235,20 @@ try {
   if (cfg.token) secrets.push(cfg.token);
 } catch { /* 没配过就没有可比对的令牌 */ }
 const user = os.userInfo().username || '';
+/* 项目实际所在目录（含上层容器目录）的绝对路径 —— 才是"本机路径被硬编码"的确证。
+ *
+ * ⚠️ 别用「上层目录的末级名」当特征：CI 上路径形如
+ *    /home/runner/work/dsh-console/dsh-console，上层目录也叫 dsh-console，
+ *    而产物里出现 dsh-console 这个词是完全正常的（README、包名都在用）→ 必然误报。
+ *    所以只在「上层目录名 ≠ 项目目录名」时才把它当线索（本机 workbuddy-demo 这种情形仍会被抓到）。 */
+const parentDir = path.dirname(ROOT);
+const parentName = path.basename(parentDir);
 const BAD_STR = [
   ...secrets,
   'C:\\Users\\' + user, 'C:/Users/' + user, '\\\\Users\\\\' + user,
   '/Users/' + user, '/home/' + user,
-  path.basename(path.dirname(ROOT)),          // 项目所在目录名，不该被写进产物
+  parentDir, parentDir.replace(/\\/g, '/'),          // 项目/上层容器的绝对路径
+  ...(parentName && parentName !== path.basename(ROOT) ? [parentName] : []),
 ].filter(Boolean);
 
 const leaks = [];
