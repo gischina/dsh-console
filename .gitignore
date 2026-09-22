@@ -1,0 +1,39 @@
+# ---- 本机探测快照：不是业务数据，也不属于源码 ----
+# 这两个文件记录的是「最后一次成功探测的那台机器」的结果，程序会自动重建。
+# 分发给别人时不要带：对方探测失败时会看到你的插件树 / MCP 工具清单。
+plugins.json
+mcp-tools.json
+
+# ---- DSH 目标配置：含访问令牌，绝对不能提交 / 分发 ----
+# 页面「配置 DSH 主机」写入（地址 + ?token=… 换来的配置），删掉即回到默认 127.0.0.1:3080
+dsh-config.json
+
+# ---- 控制台界面偏好：本机显示偏好，属于运行期状态 ----
+# 设置页「控制台界面偏好」写入（各页说明卡显隐等）。
+# 只影响本控制台长什么样，与 DSH 配置无关；删掉即回到全部默认值。
+# 不进 git 的理由：内容因人而异，每次点开关都会变，提交上去只会产生噪音 diff。
+ui-prefs.yaml
+
+# 端契约快照（tools/dump-endpoints.mjs 生成，可随时重跑）
+tools/endpoints.json
+
+# 回归脚本的产出报告（每次跑 tools/*.mjs 自动重写；要留证就手动拷出来）
+tools/*-out.txt
+
+# 以上文件都写在 server.cjs 同层：
+#   dsh-config.json 含访问令牌（必须删）
+#   plugins.json / mcp-tools.json / tools/endpoints.json 是本机探测结果（换机应删，程序会自动重建）
+#   ui-prefs.yaml 是本机界面偏好（换机可删，删掉即回默认值）
+# 复制整个目录给别人时，请把这几个删掉 —— 见 README「3.5 部署到其他机器」。
+
+# ---- 内部资料：含 DSH 上游实现细节，不进开源仓库 ----
+# 本地保留可用，只是不再提交（本机文件不动，仓库里不再有它们）
+docs/chat-parity.md
+tools/dump-endpoints.mjs
+
+
+# 生产打包产物（dist.cmd / tools/make-dist.mjs 生成，可随时删掉重建；里面有压缩混淆后的源码）
+dist/
+
+# 本项目零第三方依赖、无构建步骤，理论上不会有这个；列出来以防万一
+node_modules/

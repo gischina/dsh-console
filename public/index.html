@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<!-- DSH Console · Copyright 2026 liwei (易智瑞西安) <liwei@geoscene.cn> · SPDX-License-Identifier: Apache-2.0 · 见 LICENSE / NOTICE -->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>易智瑞西安 · 时空智能应用工作台</title>
+<script>
+/* 首屏上色：外观偏好（跟随系统/深色/浅色）存在 DSH 的 settings 里，要等 app.js 拉完
+   settings.describe 才知道。直接等就会"先深后浅"闪一下，所以本地留一份镜像，
+   在样式表之前先把 data-theme 定下来；app.js 拿到真实偏好后会覆盖成权威值。 */
+(function () {
+  var pref = 'system';
+  try { pref = localStorage.getItem('dshThemePref') || 'system'; } catch (e) {}
+  var dark = pref === 'dark';
+  if (pref === 'system') {
+    try { dark = !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches); } catch (e) { dark = true; }
+  }
+  var t = dark ? 'dark' : 'light';
+  document.documentElement.dataset.theme = t;
+  document.documentElement.style.colorScheme = t;
+})();
+</script>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<script>
+/* 部署时最常见的坑：直接双击本文件用 file:// 打开。
+   那样 /style.css 与 /app.js 会被解析成 file:///C:/style.css 之类，全部取不到，
+   页面就成了空白/无样式，而且一条 /api 请求都不会发出去。
+   这里用内联脚本兜底（不依赖任何外部文件），直接把正确用法写在页面上。 */
+if (location.protocol === 'file:') {
+  document.documentElement.innerHTML =
+    '<body style="margin:0;font:14px/1.8 system-ui,\'Microsoft YaHei\',sans-serif;background:#0a1020;color:#e8eefc">'
+    + '<div style="max-width:640px;margin:12vh auto;padding:28px 32px;border:1px solid #27406f;border-radius:12px;background:#111c38">'
+    + '<h2 style="margin:0 0 14px;font-size:19px">⚠️ 打开方式不对：不要双击 index.html</h2>'
+    + '<p style="color:#9fb0d0">你现在是用 <code style="background:#0b1428;padding:1px 6px;border-radius:5px">file://</code> 打开的本地文件。'
+    + '本控制台需要后端进程，前端资源与所有接口都由它提供，所以直接打开这个文件只会是一张空白页。</p>'
+    + '<p style="color:#9fb0d0">正确做法：</p>'
+    + '<ol style="color:#e8eefc;padding-left:22px">'
+    + '<li>先启动 DSH 主机（另开 PowerShell 窗口）：<code style="background:#0b1428;padding:1px 6px;border-radius:5px">dsh web</code></li>'
+    + '<li>回到 dsh-console 目录，双击 <b>start.cmd</b>（或执行 <code style="background:#0b1428;padding:1px 6px;border-radius:5px">node server.cjs</code>）</li>'
+    + '<li>浏览器访问控制台启动时打印的那个地址（默认 <b style="color:#41d1ff">http://127.0.0.1:3081</b>）</li>'
+    + '</ol>'
+    + '<p style="color:#6d7fa3;font-size:12.5px;margin-top:18px">若控制台启动时报错，请双击同目录下的 <b>check.cmd</b> 做一次部署自检，把输出发给管理员。</p>'
+    + '</div></body>';
+}
+</script>
+<div class="app">
+  <header class="header">
+    <div class="logo">
+      <span class="brand-org">易智瑞西安</span>
+      <span class="brand-sep">·</span>
+      <span class="brand-name">时空智能应用工作台</span>
+    </div>
+    <button class="sidetoggle" id="sidetoggle" onclick="toggleSide()" title="折叠/展开侧栏">☰</button>
+    <nav class="nav" id="nav"></nav>
+    <div class="hstatus" id="hstatus"><span class="loading"></span> 连接中…</div>
+  </header>
+  <div class="main">
+    <aside class="side" id="side"></aside>
+    <div style="flex:1;display:flex;flex-direction:column;min-width:0">
+      <div class="scopebar" id="scopebar" style="display:none"></div>
+      <main class="content" id="content"></main>
+    </div>
+  </div>
+</div>
+<script src="/app.js"></script>
+</body>
+</html>

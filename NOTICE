@@ -1,0 +1,13 @@
+DSH Console
+Copyright 2026 liwei (易智瑞西安) <liwei@geoscene.cn>
+
+本产品是 DSH（DeepSeek Harness）的本地 Web 控制台：前端 + 反向代理，
+仅绑定 127.0.0.1，用于在浏览器中操作本机运行的 DSH 服务。
+
+以 Apache License, Version 2.0 授权（详见根目录 LICENSE 文件）。
+
+说明：
+- 本仓库不含任何第三方运行时依赖；构建期压缩工具 terser（Apache-2.0）
+  仅在打包时经 npx 调用，不随产物分发。
+- DSH 本身是独立产品，不属于本仓库、也不随本仓库分发。
+- 本产品按「现状」提供，不含任何担保；使用前请阅读 LICENSE 第 7、8 条。

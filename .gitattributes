@@ -1,0 +1,14 @@
+# 两个 .cmd 必须保持 CRLF + 纯 ASCII（cmd.exe 按 CRLF 分行；见 README 目录树一节的警告）。
+# 无论贡献者本机 core.autocrlf 怎么配，这两个文件检出永远保持 CRLF。
+*.cmd  text eol=crlf
+
+# Windows 批处理相关的其他约定
+*.bat  text eol=crlf
+
+# 文本文件统一 LF 入库，检出按平台转换
+*      text=auto
+
+# 二进制文件不做任何转换
+*.png  binary
+*.ico  binary
+*.zip  binary
