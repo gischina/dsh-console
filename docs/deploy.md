@@ -12,13 +12,45 @@
 | **DSH** | 已安装，且 `dsh web` 正在运行（本控制台是它的前端 + 反向代理，**没有 DSH 它没有内容可显示**） |
 | **DSH 版本** | 本包基于 DSH **0.1.5-rc.2** 开发与回归；其他版本未测，异常时先核对 DSH 版本 |
 | 操作系统 | Windows / macOS / Linux 都可以 |
-| 磁盘 | 约 2 MB |
+| 磁盘 | 约 0.5 MB（解压后 9 个文件） |
 
 启动 DSH：
 ```powershell
 dsh web
 ```
 它会打印一行带 `?token=…` 的地址 —— **先不要关掉这个窗口**，控制台要用那个地址。
+
+---
+
+## 内置 GeoScene Pro MCP 对接
+
+控制台面向 GeoScene Pro 做了**内置对接**，控制台侧不需要写任何配置。
+
+**控制台侧（自动，无需配置）**：它按固定约定（`StartGeoSceneMcp` 启动、`127.0.0.1:11000` 通信）
+直接把 GeoScene Pro 当作本机的 MCP 服务端来用 —— 先 TCP 探测端口，探到后发起真实的
+`initialize` / `tools/list` 握手数出实际可用工具数；成功即回写快照 `mcp-tools.json`，
+失败时回退上一次成功的结果并在页面上标明来源，**不假装在线**。
+
+**DSH 侧（一次性配置）**：要让智能体真正能调用这些工具，需要在
+`~/.dsh/profiles/<profile>/cordis.patch.yml` 里加载 `mcp-geoscene` 客户端实例，改完**重启 `dsh web`**
+（该 profile 的 HMR 已关闭，不重启不生效）。
+
+握手通过后，智能体可调用的 GeoScene Pro 工具共 **31 个**，按能力分六组：
+
+| 分组 | 工具 |
+|---|---|
+| 图层与数据 | `get_all_layers_properties_json` · `get_layer_properties_by_name` · `modify_layer_properties` · `add_data` · `remove_layer_by_name` · `read_gdb_data` |
+| 符号化与标注 | `render_point` · `render_line` · `render_polygon` · `render_by_lyrx` · `render_layer_by_unique_values` · `render_layer_by_graduated_color` · `label_layer` · `set_label_symbol_properties` · `hide_labels_by_layer_name` |
+| 查询与选择 | `query_features_by_attribute` · `query_by_spatial_relation` · `filter_by_attribute` · `clear_selection_by_layer_name` · `query_and_zoom` |
+| 视图与缩放 | `zoom_to_extent` · `zoom_to_layer_extent` · `zoom_to_selected_features` |
+| 工程与出图 | `open_project` · `save_current_project` · `create_project_by_template` · `export_map_to_jpg` · `public_map` |
+| GP 与状态 | `executegp` · `get_gp_history` · `is_busy` |
+
+> 清单取自一次真实的 `initialize` + `tools/list` 握手结果，不是写死的常量 —— GeoScene Pro 版本
+> 或服务端工具开关不同，实际数量会随之变化，「MCP 服务」页显示的是本机实测值。
+
+> **没装 GeoScene 的机器上，控制台其余功能完全正常**，只有「MCP 服务」页显示离线 ——
+> 那是真实探测结果，不是故障。
 
 ---
 
@@ -124,6 +156,12 @@ Copyright 2026 liwei (易智瑞西安) <liwei@geoscene.cn>。
 
 **插件页 / MCP 页显示「探测失败」**
 这两页依赖 `dsh` 命令在 PATH 里，以及本机 DSH 的配置目录可读。`check.cmd` 的第 [6][7] 项能看出是哪一步断的。
+
+**MCP 页里 GeoScene Pro 显示离线 / 工具数为 0**
+按顺序查：① GeoScene Pro 本身没启动；② `StartGeoSceneMcp` 不在 PATH 上；③ **在 Git Bash 里启动了 DSH** ——
+那个批处理用 `tasklist | find /i "GeoScenePro.exe"` 判断 Pro 是否在跑，而 Git Bash 自带的 Unix 版
+`find.exe` 会顶掉系统 `find.exe`，于是误判「Pro 未启动」，MCP **静默接不上（工具数为 0 且不报错）**。
+请在 **PowerShell** 里启动 DSH。
 
 **想恢复默认设置**
 删掉对应的生成文件即可：删 `dsh-config.json` 回到默认地址；删 `ui-prefs.yaml` 界面全部回到默认显示。

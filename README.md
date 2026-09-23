@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/gischina/dsh-console/actions/workflows/ci.yml/badge.svg)](https://github.com/gischina/dsh-console/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.1.5--rc.2-orange.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/github/v/release/gischina/dsh-console?include_prereleases&label=version&color=orange)](CHANGELOG.md)
 [![Node](https://img.shields.io/badge/node-%E2%89%A5%2018-339933.svg)](https://nodejs.org)
 [![Dependencies](https://img.shields.io/badge/dependencies-0-success.svg)](#)
 
@@ -32,6 +32,7 @@
 - [4. 环境变量](#4-环境变量)
 - [5. 目录结构](#5-目录结构)
 - [6. 功能页面](#6-功能页面)
+  - [全量回归](#全量回归)
 - [7. 控制台自有接口](#7-控制台自有接口)
 - [8. 数据来源原则](#8-数据来源原则)
 - [9. 停止与重启](#9-停止与重启)
@@ -116,6 +117,10 @@
 
 > **本项目没有 `package.json`，不需要 `npm install`，也不需要构建。**
 > `public/` 目录里的东西就是最终前端产物；整个项目**只依赖 Node 内置模块**。
+
+> **DSH 是什么、从哪来**：它是本控制台唯一的数据源，一个需要单独安装的命令行程序。
+> 装好后在终端能跑 `dsh web` 就行；还没装的话，`npx @deepseek-ai/dsh web` 也能直接把它拉起来
+> （见下一节）。**没有 DSH，18 个页面全是空的** —— 所以本地动手验证之前，先把它准备好。
 
 ---
 
@@ -216,9 +221,9 @@ node tools/make-dist.mjs
 产物在**本项目目录下**的 `dist/`（每次运行先清空 `dist/` 再重建，目录和 zip 都带版本号）：
 
 ```
-dist/dsh-console-<版本>/    9 个文件 / 约 481 KB
-  server.cjs               后端：静态托管 + 反向代理 + WS 桥   （混淆 71 → 44 KB）
-  public/app.js            前端全部逻辑                      （混淆 476 → 366 KB）
+dist/dsh-console-<版本>/    9 个文件 / 约 497 KB
+  server.cjs               后端：静态托管 + 反向代理 + WS 桥   （混淆后约 44 KB）
+  public/app.js            前端全部逻辑                      （混淆后约 366 KB）
   public/index.html        页面骨架
   public/style.css         样式
   start.cmd                启动器
@@ -226,11 +231,12 @@ dist/dsh-console-<版本>/    9 个文件 / 约 481 KB
   README.md                部署说明（源在源码工程的 docs/deploy.md，顶部盖有版本号）
   LICENSE                  Apache-2.0 全文（再分发时必须随附）
   NOTICE                   归属声明（再分发时必须随附）
-dist/dsh-console-<版本>.zip 同一个东西的压缩包（约 156 KB，解压即得同名目录）
+dist/dsh-console-<版本>.zip 同一个东西的压缩包（约 164 KB，解压即得同名目录）
 ```
 
-**不含**：`tools/`（回归脚本，里面的函数名清单等于把内部结构交出去）、`docs/`（上游对照文档）、
-`.gitignore`，以及任何本机运行状态文件。
+**不含**：`tools/`（回归脚本，导出函数名清单等于把内部结构交出去）、
+`docs/`（包内那份 README 的源文件就是 `docs/deploy.md`，已经随包提供；其余是仓库自用的截图）、
+`.gitignore`，以及任何本机运行状态文件（`dsh-config.json` / `plugins.json` / `mcp-tools.json` / `ui-prefs.yaml`）。
 
 > **混淆的边界（重要，别误会）**：只做 `compress`（去注释 / 压空白 / 死代码消除）+ `mangle`（函数内局部变量名）。
 > **故意不开顶层函数名混淆** —— 页面有 100+ 处 `onclick="fn()"` 按名调用顶层函数，顶层改名会让这些按钮
@@ -555,7 +561,11 @@ dsh-console/
 
 两者都**打真实接口**，不 mock。功能自检**只有系统状态页那一个入口**（此前散落在各页的入口已合并，避免同一件事在 18 页里各测一遍）。
 
-全量回归（都需要控制台正在运行；`CONSOLE_PORT` 可改端口）：
+### 全量回归
+
+下面五个脚本都需要**控制台正在运行**（`CONSOLE_PORT` 可改端口），是改完代码后的完整验证，
+**每个都要认末行的 `DONE fails=0`**。其中 `test-api` / `render-all` / `page-audit` / `cdp-chat-check`
+必须有活的 DSH 会话，所以**在 CI 里跑不了** —— CI 只覆盖不需要 DSH 的那部分（见 `.github/workflows/ci.yml` 顶部说明）。
 
 | 脚本 | 规模 | 测什么 |
 |---|---|---|
@@ -868,7 +878,7 @@ Get-Content start.cmd | Where-Object { $_ -match '[^\x00-\x7F]' }   # 应无输�
 ## 12. 排障顺序
 
 1. `node server.cjs --check`（或双击 `check.cmd`）—— 部署层前提，逐项列出
-2. `node tools/test-api.mjs` —— 94 项回归；红了就知道是哪一层变了
+2. `node tools/test-api.mjs` —— 97 项回归；红了就知道是哪一层变了
    ```powershell
    $env:SID='<sessionId>'; $env:CONSOLE='http://127.0.0.1:3081'; node tools/test-api.mjs
    ```

@@ -18,7 +18,7 @@
 #      · tools/cdp-chat-check.mjs —— 要本机 Edge 的 CDP 端口
 #
 # ⚠️ 所以：**CI 绿 ≠ 全部回归通过**。发版前请在跑着 `dsh web` 的机器上按 README
-#    「回归与排障」一节完整跑一遍，认准每个脚本末行的 `DONE fails=0`。
+#    第 6 节「全量回归」完整跑一遍，认准每个脚本末行的 `DONE fails=0`。
 #
 # 项目零第三方依赖、无构建步骤，因此这里不需要 npm install。
 
