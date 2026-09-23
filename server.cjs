@@ -17,7 +17,7 @@ const os = require('node:os');
 const net = require('node:net');
 const tls = require('node:tls');
 const crypto = require('node:crypto');
-const { execFileSync, spawnSync } = require('node:child_process');
+const { execFileSync, spawnSync, spawn } = require('node:child_process');
 
 /* 本工程刻意不装 node_modules —— 除 Node 内置模块外没有任何第三方依赖。
    原先这里从 DSH 的 profile 目录复用 ws，但那是写死的绝对路径，
@@ -31,7 +31,10 @@ if (NODE_MAJOR < 18) {
   process.exit(1);
 }
 
-const PORT = Number(process.env.CONSOLE_PORT || 3081);
+const PORT = (() => {
+  const n = Number(process.env.CONSOLE_PORT || 3081);
+  return Number.isFinite(n) && n > 0 && n < 65536 ? n : 3081;
+})();
 const ROOT = path.join(__dirname, 'public');
 
 /* ============ DSH 目标地址与访问令牌 ============
@@ -49,6 +52,11 @@ const ROOT = path.join(__dirname, 'public');
        > 本目录 dsh-config.json（页面「配置 DSH 主机」写入，连接成功才落盘）
        > 默认 http://127.0.0.1:3080
 
+   无感启动（默认开启）：
+     控制台起来后若探测不到可用的 DSH，会自动用本机 dsh / npx 拉起 `dsh web`，
+     从启动日志里抓带 ?token=… 的地址并完成认证，再写入 dsh-config.json。
+     关掉：DSH_AUTO_START=0；不自动打开浏览器：DSH_OPEN_BROWSER=0。
+
    ⚠️ dsh-config.json 里可能存着令牌，已加入 .gitignore，分发代码时不要带上。 */
 const CONFIG_FILE = path.join(__dirname, 'dsh-config.json');
 /* 控制台界面偏好（各页说明卡是否显示 / 对话显示 标准|紧凑 …）。
@@ -61,12 +69,28 @@ const UI_PREFS_FILE = path.join(__dirname, 'ui-prefs.yaml');
 const UI_PREFS_LEGACY = path.join(__dirname, 'ui-prefs.json');   // 旧格式；读到就迁移到 yaml
 const DEFAULT_DSH = 'http://127.0.0.1:3080';
 
+/** DSH 用户数据根目录（profile / 插件 / 凭据 / skills）。
+ *  优先级：环境变量 DSH_HOME → 一体包 runtime/dsh-home → ~/.dsh */
+function dshHomeDir() {
+  const env = String(process.env.DSH_HOME || '').trim();
+  if (env) return path.resolve(env);
+  const bundled = path.join(__dirname, 'runtime', 'dsh-home');
+  try {
+    if (fs.statSync(path.join(bundled, 'profiles')).isDirectory()) return bundled;
+  } catch { /* 没有一体包 profile */ }
+  return path.join(process.env.USERPROFILE || process.env.HOME || '', '.dsh');
+}
+
 let DSH = DEFAULT_DSH;         // 目标 origin，如 http://127.0.0.1:3080
 let DSH_TOKEN = '';            // 访问令牌（不需要认证的部署留空即可）
-let DSH_SOURCE = 'default';    // env | config | default | ui
+let DSH_SOURCE = 'default';    // env | config | default | ui | auto
 let AUTH_COOKIE = '';          // 令牌换来的会话 cookie，形如 name=value
 let AUTH_EXPIRES = 0;          // 该 cookie 的过期时间戳（ms）；0 表示未知
 let AUTH_ERROR = '';           // 最近一次换令牌 / 校验失败的原因
+let OWNED_DSH_CHILD = null;    // 本进程拉起的 dsh web（退出时一并结束）
+let OWNED_DSH_PID = 0;         // 同上，单独记 PID（exit 时 child 句柄可能已不可用）
+let OWNED_DSH_PORT = 0;        // 我们拉起的 DSH 监听端口（兜底按端口杀掉）
+let OWNED_DSH_WATCHDOG = null; // 父进程被强杀时仍负责收尸的监护进程
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8',
@@ -147,6 +171,7 @@ function tempDir() {
    `dsh --dump-config` 会失败并回退快照。
 
    所以这里**枚举所有可用的拉起方式**，按可信度排序，逐个试到能行为止：
+     ⓪ 一体包 runtime（DSH_CONSOLE_RUNTIME 或本目录 runtime/dsh）—— 离线包最优先
      ① 当前进程 PATH 里若带 `_npx\<hash>\node_modules\.bin` —— 这就是当前那棵 npx 进程树，最可信
      ② PATH 上的 dsh（全局安装 / nvm 等）
      ③ 已知的全局安装位置（%APPDATA%\npm、node.exe 同目录、/usr/local/bin、homebrew、~/.npm-global…）
@@ -162,6 +187,13 @@ function dshCandidates() {
   // Windows 上没有扩展名的 `dsh` 是给 Git Bash 用的 POSIX 脚本，我们跑不了，不列它
   const shimNames = win ? ['dsh.cmd', 'dsh.exe', 'dsh.ps1'] : ['dsh'];
   const addDir = (dir, how) => { for (const n of shimNames) add(path.join(dir, n), how); };
+
+  // ⓪ 离线一体包内置的 DSH（make-dist --offline → runtime/dsh）
+  const bundledRoot = process.env.DSH_CONSOLE_RUNTIME
+    ? path.resolve(String(process.env.DSH_CONSOLE_RUNTIME).trim())
+    : path.join(__dirname, 'runtime');
+  addDir(path.join(bundledRoot, 'dsh', 'node_modules', '.bin'), '一体包 runtime');
+  addDir(path.join(bundledRoot, 'node_modules', '.bin'), '一体包 runtime');
 
   // ① 当前进程 PATH 里的 npx 目录（说明控制台就跑在那棵 npx 进程树里）
   const activeNpx = String(process.env.PATH || '').split(path.delimiter)
@@ -440,6 +472,407 @@ async function dshStatus(timeoutMs = 5000) {
   return out;
 }
 
+/* ============ 无感启动：探测 →（必要时）拉起 dsh web → 抓 token → 认证 ============
+   用户只需双击 start.cmd / 跑 node server.cjs。控制台会尽量自己把 DSH 准备好。
+   不会强杀别人已经开着的 dsh web（端口占用且令牌不对时只能提示手动处理）。
+   ========================================================================== */
+
+function envFlagOn(name, defaultOn) {
+  const raw = process.env[name];
+  if (raw == null || String(raw).trim() === '') return !!defaultOn;
+  const v = String(raw).trim().toLowerCase();
+  if (['0', 'false', 'no', 'off'].includes(v)) return false;
+  if (['1', 'true', 'yes', 'on'].includes(v)) return true;
+  return !!defaultOn;
+}
+
+/** 从 dsh web 日志里抠带 ?token= 的启动地址 */
+function extractLaunchUrl(text) {
+  const m = /https?:\/\/[^\s"'<>]+[?&]token=[A-Za-z0-9_-]+[^\s"'<>]*/i.exec(String(text || ''));
+  if (!m) return null;
+  return m[0].replace(/[.,;:)\]}>]+$/g, '');
+}
+
+/** 子进程环境：保证能找到同目录的 node（npx / .cmd 垫片会调它） */
+function dshSpawnEnv() {
+  const env = childEnv();
+  const nodeDir = path.dirname(process.execPath);
+  if (nodeDir && !String(env.PATH || '').split(path.delimiter).includes(nodeDir)) {
+    env.PATH = nodeDir + path.delimiter + (env.PATH || '');
+  }
+  return env;
+}
+
+function stopOwnedDsh() {
+  const child = OWNED_DSH_CHILD;
+  const pid = (child && child.pid) || OWNED_DSH_PID;
+  const port = OWNED_DSH_PORT;
+  OWNED_DSH_CHILD = null;
+  OWNED_DSH_PID = 0;
+  OWNED_DSH_PORT = 0;
+  if (!pid && !port) return;
+
+  try {
+    if (pid) {
+      if (process.platform === 'win32') {
+        // /T 杀整棵进程树：shell:true 时 child.pid 往往是 cmd，真正的 dsh/node 在子孙里
+        spawnSync('taskkill', ['/pid', String(pid), '/t', '/f'], { windowsHide: true, stdio: 'ignore' });
+      } else {
+        try { process.kill(-pid, 'SIGTERM'); } catch {
+          try { process.kill(pid, 'SIGTERM'); } catch { /* 已退出 */ }
+        }
+        // exit 钩子里 setTimeout 不会执行，用同步短等再强杀
+        try { spawnSync('sh', ['-c', 'sleep 0.25'], { stdio: 'ignore' }); } catch { /* ignore */ }
+        try { process.kill(-pid, 'SIGKILL'); } catch {
+          try { process.kill(pid, 'SIGKILL'); } catch { /* 已退出 */ }
+        }
+      }
+    }
+  } catch { /* 退出清理，失败无所谓 */ }
+
+  // 进程树没清干净时，按我们拉起时记下的端口再扫一遍（只动 OWNED_DSH_PORT，不误杀外来 DSH）
+  if (port) killListenerOnPort(port);
+}
+
+/** 结束仍占用指定本地端口的 LISTENING 进程（Windows / Unix 兜底） */
+function killListenerOnPort(port) {
+  const p = Number(port);
+  if (!p) return;
+  try {
+    if (process.platform === 'win32') {
+      const out = execFileSync('netstat', ['-ano'], { encoding: 'utf8', windowsHide: true });
+      const pids = new Set();
+      for (const line of out.split(/\r?\n/)) {
+        if (!/LISTENING/i.test(line)) continue;
+        // 匹配 *:3080 / 127.0.0.1:3080 / [::]:3080
+        if (!new RegExp(':' + p + '\\s').test(line)) continue;
+        const m = /\s(\d+)\s*$/.exec(line);
+        if (m && m[1] !== '0') pids.add(m[1]);
+      }
+      for (const id of pids) {
+        spawnSync('taskkill', ['/pid', id, '/t', '/f'], { windowsHide: true, stdio: 'ignore' });
+      }
+    } else {
+      spawnSync('sh', ['-c',
+        'pids=$(lsof -tiTCP:' + p + ' -sTCP:LISTEN 2>/dev/null); '
+        + '[ -n "$pids" ] && kill -TERM $pids 2>/dev/null; sleep 0.3; '
+        + 'pids=$(lsof -tiTCP:' + p + ' -sTCP:LISTEN 2>/dev/null); '
+        + '[ -n "$pids" ] && kill -KILL $pids 2>/dev/null; true'],
+        { stdio: 'ignore' });
+    }
+  } catch { /* 兜底失败就算了 */ }
+}
+
+/**
+ * 监护进程：本控制台（父 PID）一旦不在，就杀掉我们拉起的 DSH 进程树。
+ * 关 CMD 窗口时 Windows 常直接干掉 node，SIGINT/exit 钩子来不及跑；
+ * 监护进程以 detached 方式存活，专门处理这种強杀。
+ */
+function armOwnedDshWatchdog(dshPid, dshPort) {
+  const pid = Number(dshPid) || 0;
+  if (!pid) return;
+  OWNED_DSH_PID = pid;
+  if (dshPort) OWNED_DSH_PORT = Number(dshPort) || OWNED_DSH_PORT;
+
+  const parentPid = process.pid;
+  const port = OWNED_DSH_PORT || 0;
+  try {
+    if (process.platform === 'win32') {
+      // 父进程消失 → taskkill 整树；再按端口扫一遍，防止只杀掉了 cmd 垫片
+      const ps = [
+        '$ErrorActionPreference = \'SilentlyContinue\'',
+        '$ppid = ' + parentPid,
+        '$cpid = ' + pid,
+        '$port = ' + port,
+        'while (Get-Process -Id $ppid) { Start-Sleep -Milliseconds 500 }',
+        'taskkill /PID $cpid /T /F | Out-Null',
+        'if ($port -gt 0) {',
+        '  netstat -ano | Select-String \':\'+$port+\'\\s\' | ForEach-Object {',
+        '    if ($_ -match \'LISTENING\\s+(\\d+)\\s*$\') {',
+        '      $lp = $Matches[1]',
+        '      if ($lp -and $lp -ne \'0\') { taskkill /PID $lp /T /F | Out-Null }',
+        '    }',
+        '  }',
+        '}',
+      ].join('; ');
+      OWNED_DSH_WATCHDOG = spawn('powershell.exe', [
+        '-NoProfile', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-Command', ps,
+      ], { detached: true, stdio: 'ignore', windowsHide: true });
+    } else {
+      const sh = [
+        'while kill -0 ' + parentPid + ' 2>/dev/null; do sleep 0.5; done',
+        'kill -TERM -' + pid + ' 2>/dev/null || kill -TERM ' + pid + ' 2>/dev/null',
+        'sleep 0.4',
+        'kill -KILL -' + pid + ' 2>/dev/null || kill -KILL ' + pid + ' 2>/dev/null',
+        port ? (
+          'pids=$(lsof -tiTCP:' + port + ' -sTCP:LISTEN 2>/dev/null); '
+          + '[ -n "$pids" ] && kill -KILL $pids 2>/dev/null; true'
+        ) : 'true',
+      ].join('; ');
+      OWNED_DSH_WATCHDOG = spawn('sh', ['-c', sh], { detached: true, stdio: 'ignore' });
+    }
+    if (OWNED_DSH_WATCHDOG) OWNED_DSH_WATCHDOG.unref();
+  } catch (e) {
+    console.warn('  无法启动 DSH 退出监护：' + e.message);
+  }
+}
+
+function portFromUrl(urlOrOrigin) {
+  try {
+    const u = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(urlOrOrigin) ? urlOrOrigin : 'http://' + urlOrOrigin);
+    if (u.port) return Number(u.port);
+    return u.protocol === 'https:' ? 443 : 80;
+  } catch { return 0; }
+}
+
+/** 把抓到的启动 URL / origin 应用到当前进程，成功则可选落盘 */
+async function applyLaunchTarget(urlOrOrigin, source, persist) {
+  const parsed = parseDshInput(urlOrOrigin);
+  if (parsed.error) return { ok: false, error: parsed.error };
+  const nextOrigin = parsed.kind === 'url' ? parsed.origin : DSH;
+  const nextToken = parsed.token || (parsed.kind === 'url' ? '' : DSH_TOKEN);
+  DSH = nextOrigin;
+  DSH_TOKEN = nextToken;
+  DSH_SOURCE = source;
+  AUTH_COOKIE = '';
+  AUTH_EXPIRES = 0;
+  AUTH_ERROR = '';
+  if (DSH_TOKEN) {
+    const auth = await ensureDshAuth(true);
+    if (!auth.ok) return { ok: false, error: auth.error || '换取会话 cookie 失败' };
+  }
+  const st = await dshStatus(6000);
+  if (st.state !== 'ok') return { ok: false, error: st.error || st.detail, status: st };
+  if (persist && DSH_SOURCE !== 'env') saveDshConfig(DSH, DSH_TOKEN);
+  return { ok: true, status: st };
+}
+
+/**
+ * 拉起一条 `dsh web`，从 stdout/stderr 抓启动 URL，并轮询端口是否就绪。
+ * @returns {Promise<{ok, how?, url?, error?}>}
+ */
+function spawnDshWebAttempt(file, args, how, opts, timeoutMs) {
+  return new Promise((resolve) => {
+    let settled = false;
+    let applying = false;
+    let buf = '';
+    console.log('  → 正在自动启动 DSH（' + how + '）…');
+    let child;
+    try {
+      child = spawn(file, args, {
+        env: dshSpawnEnv(),
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+        ...opts,
+      });
+    } catch (e) {
+      return resolve({ ok: false, how, error: e.message });
+    }
+    OWNED_DSH_CHILD = child;
+    OWNED_DSH_PID = child.pid || 0;
+
+    const done = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      clearInterval(poll);
+      // 只有真正拉起来并认证成功，才挂「父死子灭」监护；失败路径由 stopOwnedDsh 收尸
+      if (result && result.ok && OWNED_DSH_CHILD && OWNED_DSH_CHILD.pid) {
+        const port = portFromUrl(result.url || DSH) || portFromUrl(DEFAULT_DSH);
+        if (port) OWNED_DSH_PORT = port;
+        armOwnedDshWatchdog(OWNED_DSH_CHILD.pid, OWNED_DSH_PORT);
+      }
+      resolve(result);
+    };
+
+    const tryApplyUrl = (url) => {
+      if (!url || applying || settled) return;
+      applying = true;
+      applyLaunchTarget(url, 'auto', true).then((r) => {
+        if (r.ok) done({ ok: true, how, url, mode: 'started' });
+        else done({ ok: false, how, url, error: r.error || '认证失败' });
+      }, (e) => done({ ok: false, how, url, error: e.message }));
+    };
+
+    const onChunk = (chunk) => {
+      const s = chunk.toString('utf8');
+      buf += s;
+      if (buf.length > 240000) buf = buf.slice(-120000);
+      // 启动日志转发到本控制台，方便排障；每行加前缀避免和本进程日志糊在一起
+      for (const line of s.split(/\r?\n/)) {
+        if (line.trim()) console.log('  [dsh] ' + line);
+      }
+      tryApplyUrl(extractLaunchUrl(buf));
+    };
+
+    child.stdout.on('data', onChunk);
+    child.stderr.on('data', onChunk);
+    child.on('error', (e) => done({ ok: false, how, error: e.message }));
+    child.on('exit', (code, signal) => {
+      if (!settled) {
+        OWNED_DSH_CHILD = null;
+        done({ ok: false, how, error: 'dsh web 提前退出（code=' + code + (signal ? ' signal=' + signal : '') + '）' });
+      }
+    });
+
+    // 有的版本日志格式变了抓不到 URL：轮询端口，无鉴权直接可用 / 仍缺 token 则继续等日志
+    const poll = setInterval(async () => {
+      if (settled) return;
+      const p = await probeDshAt(DEFAULT_DSH, 800, '');
+      if (p.authed) {
+        const r = await applyLaunchTarget(DEFAULT_DSH, 'auto', true);
+        done(r.ok ? { ok: true, how, url: DEFAULT_DSH, mode: 'started' } : { ok: false, how, error: r.error });
+        return;
+      }
+      // 已在监听但还没打出 token：继续等；若配置目标本就是该端口也一并探
+      if (DSH !== DEFAULT_DSH) {
+        const p2 = await probeDshAt(DSH, 800, AUTH_COOKIE);
+        if (p2.authed) done({ ok: true, how, url: DSH, mode: 'started' });
+      }
+    }, 1200);
+
+    const timer = setTimeout(() => {
+      const url = extractLaunchUrl(buf);
+      if (url) { tryApplyUrl(url); return; }
+      stopOwnedDsh();
+      done({ ok: false, how, error: '等待 DSH 就绪超时（' + Math.round(timeoutMs / 1000) + 's）—— 未在启动日志里看到带 ?token= 的地址' });
+    }, timeoutMs);
+  });
+}
+
+/** 按候选垫片 / npx 依次尝试拉起 dsh web */
+async function spawnDshWeb(timeoutMs) {
+  const attempts = [];
+  for (const c of dshCandidates()) {
+    if (/\.ps1$/i.test(c.file)) {
+      attempts.push({
+        how: c.how + '（PowerShell）→ ' + c.file,
+        file: 'powershell',
+        args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', c.file, 'web'],
+        opts: {},
+        timeoutMs: Math.min(timeoutMs, 45000),
+      });
+    } else if (/\.cmd$/i.test(c.file) || /\.bat$/i.test(c.file)) {
+      attempts.push({
+        how: c.how + '（经 shell）→ ' + c.file,
+        file: '"' + c.file + '" web',
+        args: [],
+        opts: { shell: true },
+        timeoutMs: Math.min(timeoutMs, 45000),
+      });
+      attempts.push({
+        how: c.how + ' → ' + c.file, file: c.file, args: ['web'], opts: { shell: true },
+        timeoutMs: Math.min(timeoutMs, 45000),
+      });
+    } else {
+      attempts.push({
+        how: c.how + ' → ' + c.file, file: c.file, args: ['web'], opts: {},
+        timeoutMs: Math.min(timeoutMs, 45000),
+      });
+    }
+  }
+  attempts.push({
+    how: 'npx @deepseek-ai/dsh web',
+    file: process.platform === 'win32' ? 'npx.cmd' : 'npx',
+    args: ['-y', '@deepseek-ai/dsh', 'web'],
+    opts: { shell: true },
+    timeoutMs, // npx 首次下载可能较慢，给满额超时
+  });
+
+  let lastErr = '没有可用的启动方式';
+  for (const a of attempts) {
+    const r = await spawnDshWebAttempt(a.file, a.args, a.how, a.opts, a.timeoutMs || timeoutMs);
+    if (r.ok) return r;
+    lastErr = r.error || lastErr;
+    console.error('  × 自动启动未成功（' + a.how + '）：' + lastErr);
+    stopOwnedDsh();
+  }
+  return { ok: false, error: lastErr };
+}
+
+/**
+ * 启动时确保 DSH 可用。已就绪则跳过；连不上则自动拉起并抓 token。
+ * @returns {Promise<{ok?, skipped?, mode?, error?, detail?}>}
+ */
+async function ensureDshRunning() {
+  if (!envFlagOn('DSH_AUTO_START', true)) {
+    console.log('  自动启动 DSH 已关闭（DSH_AUTO_START=0）');
+    return { skipped: true };
+  }
+
+  let st = await dshStatus(5000);
+  if (st.state === 'ok') {
+    console.log('✓ DSH 已就绪，跳过自动启动（' + DSH + '）');
+    return { ok: true, mode: 'already' };
+  }
+
+  // 默认端口不对时，先扫一眼别处有没有已经在跑的 DSH
+  if (st.state === 'unreachable' || st.state === 'not-dsh') {
+    console.log('  → 正在常见端口上查找已运行的 DSH …');
+    const hits = await discoverDsh();
+    for (const h of hits) {
+      const origin = 'http://127.0.0.1:' + h.port;
+      console.log('  · 发现 ' + origin + (h.needsToken ? '（需要令牌）' : ''));
+      if (!h.needsToken) {
+        const r = await applyLaunchTarget(origin, 'auto', true);
+        if (r.ok) {
+          console.log('✓ 已改用已运行的 DSH：' + origin);
+          return { ok: true, mode: 'discovered' };
+        }
+      } else if (DSH_TOKEN) {
+        const r = await applyLaunchTarget(origin + '/?token=' + encodeURIComponent(DSH_TOKEN), DSH_SOURCE === 'env' ? 'env' : 'auto', DSH_SOURCE !== 'env');
+        if (r.ok) {
+          console.log('✓ 已改用已运行的 DSH 并用现有令牌完成认证：' + origin);
+          return { ok: true, mode: 'discovered' };
+        }
+      }
+    }
+    st = await dshStatus(4000);
+    if (st.state === 'ok') return { ok: true, mode: 'discovered' };
+  }
+
+  // 端口上已有 DSH 但令牌缺失/过期：不能安全地杀掉别人的进程，只能提示
+  if (st.state === 'need-token' || st.state === 'token-rejected') {
+    console.error('× DSH 已在运行，但访问令牌不可用（' + st.state + '）。');
+    console.error('  自动启动不会强行结束已有的 dsh web。请任选其一：');
+    console.error('    ① 关掉原来的 dsh web 窗口后重新启动本控制台（会自动拉起并抓令牌）');
+    console.error('    ② 在页面状态栏粘贴 dsh web 打印的带 ?token=… 的地址');
+    return { ok: false, mode: 'need-token', error: st.error || st.detail };
+  }
+
+  if (st.state !== 'unreachable') {
+    return { ok: false, mode: st.state, error: st.error || st.detail };
+  }
+
+  // 真正没人听端口 → 拉起
+  const timeoutMs = Number(process.env.DSH_AUTO_START_TIMEOUT_MS || 120000) || 120000;
+  const started = await spawnDshWeb(timeoutMs);
+  if (started.ok) {
+    console.log('✓ 已自动启动 DSH 并完成认证（' + (started.url || DSH) + '）');
+    return { ok: true, mode: 'started', how: started.how };
+  }
+  console.error('× 自动启动 DSH 失败：' + (started.error || '未知原因'));
+  console.error('  可手动执行：dsh web   或   npx @deepseek-ai/dsh web');
+  return { ok: false, mode: 'spawn-failed', error: started.error };
+}
+
+function openConsoleBrowser() {
+  if (!envFlagOn('DSH_OPEN_BROWSER', true)) return;
+  const url = 'http://127.0.0.1:' + PORT;
+  try {
+    if (process.platform === 'win32') {
+      spawn('cmd', ['/c', 'start', '', url], { windowsHide: true, stdio: 'ignore', detached: true }).unref();
+    } else if (process.platform === 'darwin') {
+      spawn('open', [url], { stdio: 'ignore', detached: true }).unref();
+    } else {
+      spawn('xdg-open', [url], { stdio: 'ignore', detached: true }).unref();
+    }
+    console.log('  已尝试打开浏览器：' + url);
+  } catch (e) {
+    console.warn('  自动打开浏览器失败：' + e.message);
+  }
+}
+
 /* ============ 本地接口：插件清单 ============
    通过 dsh --profile web --dump-config 拿到"合成后的插件树"，
    解析出每个插件的 id / 包名 / 来源层 / 是否禁用。
@@ -696,9 +1129,8 @@ function loadPlugins(force) {
    mcp-client 实例不在读取范围内——把服务配在 bundle 层，MCP 页会空着且不报错。
    ================================================= */
 function readMcpServers() {
-  const home = process.env.USERPROFILE || process.env.HOME || '';
   const profile = process.env.DSH_PROFILE || 'web';
-  const patchPath = path.join(home, '.dsh', 'profiles', profile, 'cordis.patch.yml');
+  const patchPath = path.join(dshHomeDir(), 'profiles', profile, 'cordis.patch.yml');
   const servers = [];
   const warnings = [];
 
@@ -1020,7 +1452,7 @@ const server = http.createServer(async (req, res) => {
     const roots = [
       { scope: 'project', label: '项目级', path: path.join(projectRoot, '.dsh', 'skills'), rank: 100 },
       { scope: 'project-agents', label: '项目级(.agents)', path: path.join(projectRoot, '.agents', 'skills'), rank: 200 },
-      { scope: 'user', label: '用户级', path: path.join(home, '.dsh', 'skills'), rank: 400 },
+      { scope: 'user', label: '用户级', path: path.join(dshHomeDir(), 'skills'), rank: 400 },
       { scope: 'user-agents', label: '用户级(.agents)', path: path.join(home, '.agents', 'skills'), rank: 500 },
     ];
     const found = [];
@@ -1125,8 +1557,7 @@ const server = http.createServer(async (req, res) => {
      页面前端再拿这些名字去 credentials/describe 逐个确认状态 —— 状态仍以 DSH 为准。
      本接口在任何情况下都不读取、不返回凭据的值。 */
   if (pathname === '/api/local/credentials') {
-    const home = process.env.USERPROFILE || process.env.HOME || process.cwd();
-    const file = path.join(home, '.dsh', '.credentials.yaml');
+    const file = path.join(dshHomeDir(), '.credentials.yaml');
     const out = { source: 'local-file', file, exists: false, refs: [], records: [], error: null, at: new Date().toISOString() };
     try {
       if (fs.existsSync(file)) {
@@ -1573,7 +2004,9 @@ async function diagnose() {
     ? '已配置 ' + st.tokenHint + '（来源：' + st.source + '）'
     : '未配置（需要认证的 DSH 会要求）');
   row(null, '地址来源', st.source === 'env' ? '环境变量 DSH_ORIGIN'
-    : st.source === 'config' ? 'dsh-config.json（页面里填的）' : '默认 ' + DEFAULT_DSH);
+    : st.source === 'config' ? 'dsh-config.json（页面里填的）'
+    : st.source === 'auto' ? '自动启动 / 自动发现'
+    : st.source === 'ui' ? '页面「配置 DSH 主机」' : '默认 ' + DEFAULT_DSH);
   // 版本只能从本机读；这一行让自检能一眼看出当前装的是哪个版本
   row(null, 'DSH 版本', dshVersion() + '（本机 dsh 包读出的，与「系统状态」页显示一致）'
     + (st.dshRev ? ' · 运行实例构建号 ' + st.dshRev : ''));
@@ -1621,11 +2054,21 @@ async function diagnose() {
   }
 
   console.log('\n[7] DSH profile');
-  const home = process.env.USERPROFILE || process.env.HOME || '';
+  const dshHome = dshHomeDir();
   const prof = process.env.DSH_PROFILE || 'web';
-  const patch = path.join(home, '.dsh', 'profiles', prof, 'cordis.patch.yml');
-  row(fs.existsSync(patch), '~/.dsh/profiles/' + prof + '/cordis.patch.yml',
+  const patch = path.join(dshHome, 'profiles', prof, 'cordis.patch.yml');
+  const profPkg = path.join(dshHome, 'profiles', prof, 'package.json');
+  row(null, 'DSH_HOME', dshHome + (process.env.DSH_HOME ? '（环境变量）'
+    : dshHome.includes(path.join('runtime', 'dsh-home')) ? '（一体包 runtime）' : '（默认 ~/.dsh）'));
+  row(fs.existsSync(patch), 'profiles/' + prof + '/cordis.patch.yml',
     fs.existsSync(patch) ? '存在' : '不存在（「MCP 服务」页会显示未配置，属正常）');
+  if (fs.existsSync(profPkg)) {
+    let nDep = 0;
+    try { nDep = Object.keys(JSON.parse(fs.readFileSync(profPkg, 'utf8')).dependencies || {}).length; } catch {}
+    row(true, 'profiles/' + prof + '/package.json', '存在，dependencies ' + nDep + ' 个（用户插件清单）');
+  } else {
+    row(null, 'profiles/' + prof + '/package.json', '不存在');
+  }
 
   console.log('\n[8] 打开方式');
   row(null, '正确地址：http://127.0.0.1:' + PORT);
@@ -1647,7 +2090,9 @@ async function preflight() {
     console.error('  请确认 public/ 目录与本文件在同一层。');
   }
   console.log('  目标来源   : ' + (DSH_SOURCE === 'env' ? '环境变量 DSH_ORIGIN'
-    : DSH_SOURCE === 'config' ? 'dsh-config.json（页面里填的）' : '默认地址'));
+    : DSH_SOURCE === 'config' ? 'dsh-config.json（页面里填的）'
+    : DSH_SOURCE === 'auto' ? '自动启动 / 自动发现'
+    : DSH_SOURCE === 'ui' ? '页面「配置 DSH 主机」' : '默认地址'));
   console.log('  访问令牌   : ' + (DSH_TOKEN ? '已配置 ' + DSH_TOKEN.slice(0, 4) + '…' + DSH_TOKEN.slice(-4)
     : '未配置（需要认证的 DSH 会要求）'));
 
@@ -1663,9 +2108,11 @@ async function preflight() {
     console.error('  两种填法：');
     console.error('    ① 浏览器打开 http://127.0.0.1:' + PORT + ' 后，点右上角状态栏，在弹窗里粘贴');
     console.error('    ② PowerShell 里设 $env:DSH_ORIGIN = "http://127.0.0.1:' + (new URL(DSH).port || 80) + '/?token=<令牌>" 后重启控制台');
+    console.error('  若希望下次无感：先关掉已有的 dsh web，再启动本控制台（会自动拉起并抓令牌）。');
     return;
   }
-  console.error('  本控制台是 DSH 的前端 + 反向代理，必须先启动 DSH。');
+  console.error('  本控制台是 DSH 的前端 + 反向代理，必须先有可用的 DSH。');
+  console.error('  自动启动未成功时，请手动：dsh web   或   npx @deepseek-ai/dsh web');
   await reportDshDiscovery(st.httpStatus === '—' ? '不可达' : 'HTTP ' + st.httpStatus);
 }
 
@@ -1691,17 +2138,52 @@ if (process.argv.includes('--check')) {
     process.exit(1);
   });
 } else {
+  const onStop = () => { stopOwnedDsh(); };
+  process.on('exit', onStop);
+  process.on('SIGINT', () => { stopOwnedDsh(); process.exit(0); });
+  process.on('SIGTERM', () => { stopOwnedDsh(); process.exit(0); });
+  // Windows：Ctrl+Break / 部分控制台关闭路径会打到 SIGBREAK
+  try { process.on('SIGBREAK', () => { stopOwnedDsh(); process.exit(0); }); } catch { /* 非 Windows 无此信号 */ }
+
+  // 控制台端口必须先起来：后面自动拉起 DSH / 换 token 失败时，也不能把 3081 一起带走
+  let consoleReady = false;
+  const keepAliveOnError = (kind, err) => {
+    const msg = (err && err.stack) ? err.stack : String(err && err.message ? err.message : err);
+    console.error('× ' + kind + '：' + msg);
+    if (consoleReady) {
+      console.error('  控制台服务仍在运行：http://127.0.0.1:' + PORT);
+      console.error('  （不会因为 DSH 自动启动失败而退出；可用 check.cmd 排查）');
+      return;
+    }
+    process.exit(1);
+  };
+  process.on('uncaughtException', (err) => keepAliveOnError('未捕获异常', err));
+  process.on('unhandledRejection', (err) => keepAliveOnError('未处理的 Promise 拒绝', err));
+
   server.listen(PORT, '127.0.0.1', async () => {
+    consoleReady = true;
     console.log('');
     console.log('DSH Console 已启动');
     console.log('  控制台地址 : http://127.0.0.1:' + PORT);
     console.log('  代理目标   : ' + DSH);
     console.log('  实时流桥接 : ws://127.0.0.1:' + PORT + '/api/remote.mux → ' + DSH);
+    if (process.env.DSH_HOME) console.log('  DSH_HOME   : ' + process.env.DSH_HOME);
+    console.log('  （控制台端口已监听；正在检查 / 自动启动 DSH …）');
     console.log('');
-    await preflight();
+    try {
+      await ensureDshRunning();
+      await preflight();
+    } catch (e) {
+      console.error('× 自动准备 DSH 时出错：' + (e && e.message ? e.message : e));
+      if (e && e.stack) console.error(e.stack);
+      console.error('  控制台本身已在 http://127.0.0.1:' + PORT + ' —— 可先打开页面，再手动配置 DSH');
+    }
     console.log('');
-    console.log('浏览器打开 http://127.0.0.1:' + PORT + ' 即可（Ctrl+C 停止）');
-    console.log('若首页提示需要配置 DSH：点右上角状态栏，把 dsh web 打印的地址整段填进去。');
-    console.log('（部署排查：node server.cjs --check）');
+    console.log('浏览器打开 http://127.0.0.1:' + PORT + ' 即可（Ctrl+C 或关闭窗口会停止控制台；若 DSH 由本进程拉起，会一并结束）');
+    console.log('若仍提示需要配置 DSH：点右上角状态栏，把 dsh web 打印的地址整段填进去。');
+    console.log('（部署排查：node server.cjs --check；关闭自动启动：DSH_AUTO_START=0）');
+    try { openConsoleBrowser(); } catch (e) {
+      console.warn('  自动打开浏览器失败：' + (e && e.message ? e.message : e));
+    }
   });
 }
