@@ -7,11 +7,14 @@
 [![Dependencies](https://img.shields.io/badge/dependencies-0-success.svg)](#)
 
 **DSH Console 是一个 DSH 控制台**，把 DSH 的会话、技能、MCP、插件、模型、设置、
-凭据、子代理等能力做成一个本地网页，打开 `http://127.0.0.1:3081` 即可操作。
-**它不是替代 DSH，而是 DSH 的增强**：内容全部由 DSH 实时提供，DSH 不停跑，它就有内容。
+凭据、子代理等能力做成一个本地网页，打开 `http://127.0.0.1:3081` 即可操作，
+并**内置对接 GeoScene Pro MCP 服务端**——GeoScene Pro 起来后，对话里就能直接调用它的 31 个工具，
+覆盖从加载数据、读写图层属性，到符号化与标注、属性与空间关系查询、视图缩放、工程存档与出图，
+再到执行 GP 工具的整条链路。
+**它不是替代 DSH，而是 DSH 的增强**：控制台自己不存数据，页面上的内容全部来自 DSH 的实时接口。
 
-在它之上，把一个智能体应用从配置到跑起来，不必再在终端、配置文件和多处文档之间来回切换——
-能力、配置与运行状态都收在同一个页面里，看清、点动、调好，整个过程更省事。
+搭建一个时空智能体应用的过程也收进了同一页：不必再在终端、配置文件和多份文档之间来回切换，
+能力、配置与运行状态都看得见、改得动，整个过程更省事。
 
 ---
 <img width="1910" alt="时空智能体 · 对话页" src="docs/images/chat-agent.png" />
@@ -21,6 +24,7 @@
 
 ## 目录
 
+- [内置 GeoScene Pro MCP 对接](#内置-geoscene-pro-mcp-对接)
 - [1. 架构与依赖关系](#1-架构与依赖关系)
 - [2. 环境要求](#2-环境要求)
 - [3. 快速启动（两步）](#3-快速启动两步)
@@ -34,6 +38,38 @@
 - [10. 故障排查](#10-故障排查)
 - [11. 已知限制](#11-已知限制)
 - [12. 排障顺序](#12-排障顺序)
+
+---
+
+## 内置 GeoScene Pro MCP 对接
+
+控制台面向 GeoScene Pro 做了内置对接：控制台侧不需要写任何配置，它按固定约定
+（`StartGeoSceneMcp` 启动、`127.0.0.1:11000` 通信）直接把 GeoScene Pro 当作本机的 MCP 服务端来用。
+
+**控制台侧（自动，无需配置）**
+
+- TCP 探测 `127.0.0.1:11000`
+- 探到端口后发起真实的 `initialize` / `tools/list` 握手，数出实际可用工具数
+- 握手成功即回写快照 `mcp-tools.json`；失败时回退上一次成功的结果，并在页面上标明来源，**不假装在线**
+
+**DSH 侧（一次性配置）**
+
+要让智能体真正能调用这些工具，需要在 `~/.dsh/profiles/<profile>/cordis.patch.yml` 里
+加载 `mcp-geoscene` 客户端实例，改完**重启 `dsh web`**（该 profile 的 HMR 已关闭）。
+
+握手通过后，智能体可调用的 GeoScene Pro 工具共 **31 个**：
+
+| 分组 | 工具 |
+|---|---|
+| 图层与数据 | `get_all_layers_properties_json` · `get_layer_properties_by_name` · `modify_layer_properties` · `add_data` · `remove_layer_by_name` · `read_gdb_data` |
+| 符号化与标注 | `render_point` · `render_line` · `render_polygon` · `render_by_lyrx` · `render_layer_by_unique_values` · `render_layer_by_graduated_color` · `label_layer` · `set_label_symbol_properties` · `hide_labels_by_layer_name` |
+| 查询与选择 | `query_features_by_attribute` · `query_by_spatial_relation` · `filter_by_attribute` · `clear_selection_by_layer_name` · `query_and_zoom` |
+| 视图与缩放 | `zoom_to_extent` · `zoom_to_layer_extent` · `zoom_to_selected_features` |
+| 工程与出图 | `open_project` · `save_current_project` · `create_project_by_template` · `export_map_to_jpg` · `public_map` |
+| GP 与状态 | `executegp` · `get_gp_history` · `is_busy` |
+
+> 清单取自一次真实的 `initialize` + `tools/list` 握手结果，不是写死的常量；GeoScene Pro 版本
+> 或服务端工具开关不同，实际数量会随之变化 ——「MCP 服务」页显示的是本机实测值。
 
 ---
 
@@ -337,10 +373,10 @@ DSH 没起来（或需要令牌而没配）时是：
 
 然后浏览器打开 **http://127.0.0.1:3081**。
 
-### 关于 GeoScene（可选）
+### 关于 GeoScene
 
-GeoScene Pro 的 MCP 桥接不是必需的。没装 GeoScene 的机器上：
-**控制台其余功能完全正常**，只有「MCP 服务」页显示离线/探测不到 —— 那是真实结果，不是故障。
+控制台对 GeoScene Pro 是**内置对接**：GeoScene Pro 在跑，MCP 服务页就是活的。
+没装 GeoScene 的机器上，**控制台其余功能完全正常**，只有「MCP 服务」页显示离线/探测不到 —— 那是真实结果，不是故障。
 
 ---
 

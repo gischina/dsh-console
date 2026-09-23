@@ -17,6 +17,10 @@
   （语法检查 / 打包完整性 / 无 DSH 起服务烟测 / 入库守卫）
 - `.editorconfig`：`.cmd` 必须 CRLF、Markdown 保留行尾空格
 - README 徽章：CI / 许可 / 版本 / Node 版本 / 零依赖
+- README 新增「内置 GeoScene Pro MCP 对接」一节：控制台侧零配置的对接方式
+  （`StartGeoSceneMcp` 启动、`127.0.0.1:11000` 探测 + 真实 `initialize` / `tools/list` 握手、
+  握手结果落盘与回退规则）、DSH 侧需要一次性加载 `mcp-geoscene` 客户端实例，
+  以及实测可调用的 31 个 GeoScene Pro 工具清单（按能力分 6 组）
 
 ### 说明
 - **CI 的覆盖边界**（实测得出，不是估计）：`render-all.mjs` 会把页面里的请求
@@ -27,9 +31,12 @@
 ### 变更
 - 移除内部资料 `docs/chat-parity.md`（上游对话流对照）与 `tools/dump-endpoints.mjs`
   （DSH 端点导出），并加入 `.gitignore`，不再随仓库分发
-- README 简介重写：先说清「DSH Console 是一个 DSH 控制台」与它能做什么，
-  再说明它不是替代 DSH 而是 DSH 的增强（内容由 DSH 实时提供），
-  最后落到用它把一个智能体应用从配置到跑起来的实际价值
+- README 简介重写：先说清「DSH Console 是一个 DSH 控制台」与它能做什么
+  （含内置对接 GeoScene Pro MCP），再说明它不是替代 DSH 而是 DSH 的增强
+  （控制台自己不存数据，内容全部来自 DSH 的实时接口），
+  最后落到用它搭建一个时空智能体应用的实际价值
+- README「关于 GeoScene（可选）」改为「关于 GeoScene」，口径由「不是必需的」
+  统一为「内置对接」
 - README「数据来源原则」措辞调整为「最后一次成功探测结果的落盘快照」
 
 ## [0.1.5-rc.2] - 2026-09-22
