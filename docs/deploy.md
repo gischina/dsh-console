@@ -1,6 +1,8 @@
 # DSH 控制台 —— 部署说明
 
 > 这是**生产部署包**（构建产物，源码已压缩）。只需要 Node.js，不需要 `npm install`、不需要编译。
+>
+> 若目标机也无法安装 Node / DSH，请改用 **离线一体包**（`dist-offline.cmd` 构建，见 `docs/deploy-offline.md`）。
 
 ---
 
@@ -12,7 +14,7 @@
 | **DSH** | 已安装，且 `dsh web` 正在运行（本控制台是它的前端 + 反向代理，**没有 DSH 它没有内容可显示**） |
 | **DSH 版本** | 本包基于 DSH **0.1.5-rc.2** 开发与回归；其他版本未测，异常时先核对 DSH 版本 |
 | 操作系统 | Windows / macOS / Linux 都可以 |
-| 磁盘 | 约 0.5 MB（解压后 9 个文件） |
+| 磁盘 | 约 2 MB |
 
 启动 DSH：
 ```powershell

@@ -32,8 +32,11 @@ docs/chat-parity.md
 tools/dump-endpoints.mjs
 
 
-# 生产打包产物（dist.cmd / tools/make-dist.mjs 生成，可随时删掉重建；里面有压缩混淆后的源码）
+# 生产打包产物（dist.cmd / dist-offline.cmd / tools/make-dist.mjs 生成，可随时删掉重建；里面有压缩混淆后的源码）
 dist/
+
+# 离线打包缓存（Node zip、npm cache；可删，下次构建会重新下载）
+tools/.cache/
 
 # 本项目零第三方依赖、无构建步骤，理论上不会有这个；列出来以防万一
 node_modules/

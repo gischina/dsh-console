@@ -17,6 +17,7 @@ echo   Output : %~dp0dist\dsh-console\
 echo            %~dp0dist\dsh-console.zip
 echo   Notes  : source is minified; terser is fetched by npx once
 echo            (needs network on the very first build only)
+echo   Tip    : for a fully offline zip with Node+DSH, use dist-offline.cmd
 echo.
 
 node tools\make-dist.mjs %*
