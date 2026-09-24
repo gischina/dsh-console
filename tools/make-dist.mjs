@@ -183,6 +183,22 @@ for (const rel of ['public/index.html', 'public/style.css', 'start.cmd', 'check.
   say('  ✓ ' + rel);
 }
 
+/* 知识库界面用的 React 运行时：由 tools/extract-react-runtime.mjs 从 DSH 前端里抽出来，
+ * 已经是压缩过的产物，再压一遍没意义（还可能踩 terser 的边界），原样带进包即可。
+ * ⚠️ 少了它，包里「知识库」「本地模型」两页会装载失败 —— 必须一并拷贝。 */
+const reactSrcDir = path.join(ROOT, 'public', 'react');
+if (fs.existsSync(reactSrcDir)) {
+  const reactDstDir = path.join(OUT, 'public', 'react');
+  fs.mkdirSync(reactDstDir, { recursive: true });
+  for (const f of fs.readdirSync(reactSrcDir)) {
+    fs.copyFileSync(path.join(reactSrcDir, f), path.join(reactDstDir, f));
+    say('  ✓ public/react/' + f + '  （知识库界面的 React 运行时）');
+  }
+} else {
+  say('  !! 缺 public/react/ —— 先跑 node tools/extract-react-runtime.mjs 生成，否则知识库页在包里会装载失败');
+  bad++;
+}
+
 /* 部署说明：源码工程里的 docs/deploy.md 是给运维看的那一份，进包时命名成 README.md（对方一眼能找到），
  * 顶部盖一行版本号，对方一看就知道拿的是哪个包。 */
 const deployDoc = path.join(ROOT, 'docs', 'deploy.md');

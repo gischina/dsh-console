@@ -278,7 +278,8 @@ for (const r of ROUTES) {
         恰恰是"没整合好"最容易藏身的地方。 */
 console.log('\n=== 接线审计（onclick 目标 / State 字段 / 加载器）===');
 {
-  const src = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  // 同前：归一成 LF（app.js 在本机是 CRLF），否则按 `\n` 锚定的正则全部失效
+  const src = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
   const seen = (name) => vm.runInContext('typeof ' + name, sandbox) !== 'undefined';
   // ① 内联事件处理函数
   // 属性里可能先给 State 赋值再调用（oninput="State.x=this.value;render({paintOnly:true})"），
@@ -558,14 +559,19 @@ console.log('\n=== 静态不变量（防回归）===');
     console.log((ok ? '✓' : '✗') + ' ' + label + (detail ? '  ' + detail : ''));
     ok ? pass++ : fail++;
   };
-  const css = fs.readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
-  const appSrc = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  // ⚠️ 一律归一成 LF 再交给断言（2026-09-24）：public/app.js 与 server.cjs 在本机是 **CRLF**，
+  //    而下面多处用 `\n` 锚定的正则（如 `/\n\}\n/` 找顶层函数收尾 `/\n\};/` 切对象字面量）。
+  //    不归一的话这些 search() 会返回 -1，fnRegion() 就**退化成"文件剩下全部内容"**，
+  //    断言变成扫全文件 —— 既可能假绿（碰巧别处有 paintOnly）也可能假红，且完全静默。
+  const lf = s => String(s).replace(/\r\n/g, '\n');
+  const css = lf(fs.readFileSync(new URL('../public/style.css', import.meta.url), 'utf8'));
+  const appSrc = lf(fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8'));
   invite('.content.chat-fill 去掉对话页底部内边距', css.includes('.content.chat-fill{padding-bottom:0}'));
   invite('附件/引用空条不占位', css.includes('#attachpreview:not(:empty)') && css.includes('#refchips:not(:empty)'));
   invite('对话页标记条没有内联 padding', appSrc.includes('<div id="attachpreview"></div>') && appSrc.includes('<div id="refchips"></div>'));
   // 会话附件：前端取字节的 URL、服务端路由、样式三处都要在位
   {
-    const srvSrc = fs.readFileSync(new URL('../server.cjs', import.meta.url), 'utf8');
+    const srvSrc = lf(fs.readFileSync(new URL('../server.cjs', import.meta.url), 'utf8'));
     invite('服务端有附件路由（GET /api/local/attachment → session/attachment）',
       srvSrc.includes("pathname === '/api/local/attachment'") && srvSrc.includes("remoteCall('session/attachment'"));
     invite('前端附件 URL 与样式齐备',

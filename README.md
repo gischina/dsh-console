@@ -6,7 +6,7 @@
 [![Node](https://img.shields.io/badge/node-%E2%89%A5%2018-339933.svg)](https://nodejs.org)
 [![Dependencies](https://img.shields.io/badge/dependencies-0-success.svg)](#)
 
-**DSH Console 是一个 DSH 控制台**，把 DSH 的会话、技能、MCP、插件、模型、设置、
+**DSH Console 是一个 DSH 控制台**，把 DSH 的会话、技能、知识库、MCP、插件、模型、设置、
 凭据、子代理等能力做成一个本地网页，打开 `http://127.0.0.1:3081` 即可操作，
 并**内置对接 GeoScene Pro MCP 服务端**——GeoScene Pro 起来后，对话里就能直接调用它的 31 个工具，
 覆盖从加载数据、读写图层属性，到符号化与标注、属性与空间关系查询、视图缩放、工程存档与出图，
@@ -21,10 +21,12 @@
 <img width="1910" alt="轨迹 · 会话事件时间线" src="docs/images/trajectory.png" />
 <img width="1910" alt="工作流 · 运行明细与子代理" src="docs/images/workflow.png" />
 <img width="1910" alt="工作空间 · 分组与工作目录" src="docs/images/workspace.png" />
+<img width="1910" alt="知识库 · dsh-knowledge 插件管理界面" src="docs/images/knowledge.png" />
 
 ## 目录
 
 - [内置 GeoScene Pro MCP 对接](#内置-geoscene-pro-mcp-对接)
+- [知识库（dsh-knowledge 插件）](#知识库dsh-knowledge-插件)
 - [1. 架构与依赖关系](#1-架构与依赖关系)
 - [2. 环境要求](#2-环境要求)
 - [3. 快速启动（两步）](#3-快速启动两步)
@@ -74,6 +76,41 @@
 
 ---
 
+## 知识库（dsh-knowledge 插件）
+
+控制台对第三方知识库插件 **dsh-knowledge** 做了自适应集成：DSH 那边装了它，控制台侧不加任何配置，
+就会多出「知识库」和「本地模型」两个页面；没装时这两个页面显示引导卡，其余功能不受影响。
+
+**插件提供什么**（本项目不重复实现，只负责接进来）
+
+- 知识库管理：建库 / 分组 / 从文件、目录、URL 或纯文本导入文档，解析分块，原文与分块预览，召回测试
+- 向量与检索：OpenAI 兼容 / Ollama / 本地模型 / 关键词降级四种 embedding 模式，混合检索与回答前自动注入
+- 模型可见工具：`knowledge_search` 等一组工具，智能体在对话里直接查知识库
+- 本地模型管理：embedding / 重排 / OCR 模型的下载、重试与健康状态
+
+**控制台做了什么**
+
+- 两个页面：`#/knowledge`（侧栏「能力与资产」组）与 `#/knowledge/models`
+  （不在侧栏；从知识库页右上角的「🧩 本地模型」按钮进入），
+  以插件槽位装载**插件自带的界面**——控制台不维护第二份知识库界面
+- `server.cjs` 铺一条 `/api/kb/* → /knowledge/*` 的等价通道：请求体原样转发、不设超时
+  （导入目录树、重建索引是分钟级长任务，浏览器中途断开要把中止传下去）
+- 插件界面代码**运行时从本机已装的插件里取**（`/api/kb-client.js`），不拷贝进本仓库——
+  页面上跑的永远是你装的那一份，生产包也不随带插件的 AGPL 代码
+- 插件界面需要 React：控制台内置一份**构建期抽取**的 React 运行时（`public/react/`，
+  由 `tools/extract-react-runtime.mjs` 生成），不借用 DSH 的前端产物（那样会把 DSH 的界面整个带起来）
+
+**前提（DSH 侧，一次性）**
+
+```powershell
+dsh plugin --profile web add dsh-knowledge
+```
+
+装完**重启 `dsh web`**。插件是否可用以「知识库」页顶部的实时探测为准；
+没装时页面给出引导，不会假装可用。
+
+---
+
 ## 1. 架构与依赖关系
 
 ```
@@ -120,7 +157,7 @@
 
 > **DSH 是什么、从哪来**：它是本控制台唯一的数据源，一个需要单独安装的命令行程序。
 > 装好后在终端能跑 `dsh web` 就行；还没装的话，`npx @deepseek-ai/dsh web` 也能直接把它拉起来
-> （见下一节）。**没有 DSH，18 个页面全是空的** —— 所以本地动手验证之前，先把它准备好。
+> （见下一节）。**没有 DSH，所有页面都是空的** —— 所以本地动手验证之前，先把它准备好。
 
 ---
 
@@ -206,7 +243,7 @@ curl.exe -s -o NUL -w "控制台=%{http_code}\n" http://127.0.0.1:3081/
 
 | 场景 | 怎么做 | 产物 |
 |---|---|---|
-| **生产部署**（不给源码） | 双击 **`dist.cmd`**（等价于 `node tools/make-dist.mjs`） | `dist/dsh-console-<版本>/` + 同名 `.zip`：源码已压缩混淆，只含运行必需的 7 个文件 + LICENSE/NOTICE |
+| **生产部署**（不给源码） | 双击 **`dist.cmd`**（等价于 `node tools/make-dist.mjs`） | `dist/dsh-console-<版本>/` + 同名 `.zip`：源码已压缩混淆，只含运行必需的文件 + LICENSE/NOTICE |
 | 看源码 / 一起改 | git，或下面的 `robocopy` / `rsync` 命令 | 源码目录（**必须**排除本机状态文件） |
 
 ### A. 生产部署包（推荐）
@@ -221,17 +258,18 @@ node tools/make-dist.mjs
 产物在**本项目目录下**的 `dist/`（每次运行先清空 `dist/` 再重建，目录和 zip 都带版本号）：
 
 ```
-dist/dsh-console-<版本>/    9 个文件 / 约 497 KB
-  server.cjs               后端：静态托管 + 反向代理 + WS 桥   （混淆后约 44 KB）
-  public/app.js            前端全部逻辑                      （混淆后约 366 KB）
+dist/dsh-console-<版本>/
+  server.cjs               后端：静态托管 + 反向代理 + WS 桥 + 知识库通道（混淆）
+  public/app.js            前端全部逻辑（混淆）
   public/index.html        页面骨架
   public/style.css         样式
+  public/react/            内置 React 运行时（知识库插件界面依赖，构建期抽取）
   start.cmd                启动器
   check.cmd                部署自检
   README.md                部署说明（源在源码工程的 docs/deploy.md，顶部盖有版本号）
   LICENSE                  Apache-2.0 全文（再分发时必须随附）
   NOTICE                   归属声明（再分发时必须随附）
-dist/dsh-console-<版本>.zip 同一个东西的压缩包（约 164 KB，解压即得同名目录）
+dist/dsh-console-<版本>.zip 同一个东西的压缩包（解压即得同名目录）
 ```
 
 **不含**：`tools/`（回归脚本，导出函数名清单等于把内部结构交出去）、
@@ -241,7 +279,7 @@ dist/dsh-console-<版本>.zip 同一个东西的压缩包（约 164 KB，解压�
 > **混淆的边界（重要，别误会）**：只做 `compress`（去注释 / 压空白 / 死代码消除）+ `mangle`（函数内局部变量名）。
 > **故意不开顶层函数名混淆** —— 页面有 100+ 处 `onclick="fn()"` 按名调用顶层函数，顶层改名会让这些按钮
 > 全部点不动（要开得先把交互层重构成事件委托，那是另一件事）。已实测对照：混淆前后 window 全局函数
-> **290 个 → 290 个，零缺失零多出**，18 个路由逐页渲染 + 点按钮均无异常。
+> **集合逐一对上，零缺失零多出**，全部路由逐页渲染 + 点按钮均无异常。
 > 所以产物的定位是**「不可读、不好改」，而不是「不可逆向」** —— JS 明文运行，没有真正的加密。
 
 > 混淆器 terser 走 npx 调用，**只在打包时用**：不进项目依赖、不生成 `package.json`，产物运行时依然零依赖。
@@ -437,7 +475,8 @@ dsh-console/
 ├─ public/
 │  ├─ index.html         # 页面骨架（页头品牌、侧栏、内容区）
 │  ├─ app.js             # 单页应用全部逻辑（路由 / 页面 / 对话 / API 翻译表 / 逻辑流）
-│  └─ style.css          # 深色科技风主题 + 浅色主题变量（含长内容/窄屏加固）
+│  ├─ style.css          # 深色科技风主题 + 浅色主题变量（含长内容/窄屏加固）
+│  └─ react/             # 构建期抽取的 React 运行时（知识库插件界面依赖；tools/extract-react-runtime.mjs 生成）
 ├─ plugins.json          # 插件树快照（dump 失败时兜底；每次 dump 成功自动回写）※ 本机数据
 ├─ mcp-tools.json        # MCP 工具清单快照（握手失败时兜底；每次握手成功自动回写）※ 本机数据
 ├─ dsh-config.json       # DSH 地址 + 访问令牌（页面「配置 DSH 主机」写入）※ 含密钥，勿分发
@@ -447,11 +486,14 @@ dsh-console/
 │  └─ images/            # README 用的界面截图（随仓库走相对路径，不依赖图床）
 ├─ tools/                # 运维 / 排查用的小工具（不参与运行，可整体不拷）
 │  ├─ test-api.mjs       # 端到端回归：端点映射 + 参数形状 + 页面渲染 + 接线审计 + 重绘防回归
-│  ├─ render-all.mjs     # 渲染回归：18 页骨架 + 说明卡 + 加载器状态机 + 消息操作条 + Markdown 渲染
+│  ├─ render-all.mjs     # 渲染回归：全部页面骨架 + 说明卡 + 加载器状态机 + 消息操作条 + Markdown 渲染
 │  ├─ page-audit.mjs     # 静态审计：跨页一致性 / 接线 / 死链 / 文案，外加端点只读探测
 │  ├─ sandbox-render.mjs # 沙箱渲染：把 app.js 载进 vm 打桩渲染，查运行时异常与凭据兜底
 │  ├─ cdp-chat-check.mjs # 真机核验：Edge headless + CDP 量对话页渲染结构与轮次跳转（需 Windows + Edge）
 │  ├─ make-dist.mjs      # 生产打包：读 VERSION 命名产物 + 混淆 + 排除本机状态文件 + 收尾扫令牌与本机路径
+│  ├─ extract-react-runtime.mjs # 从 DSH 前端产物抽取 React 运行时到 public/react/（带自检；DSH 更新后重跑）
+│  ├─ verify-react-runtime.mjs  # 校验抽取出的 React 运行时可用（断言清单，全绿才算数）
+│  ├─ shot-page.mjs      # 文档截图：Edge headless + CDP 按路由截整页（README/docs 的界面图来自它）
 │  └─ peek-stream.mjs    # 看一眼某条逻辑流的开屏帧（control/follow/workspace/events）
 ├─ dist/                 # 生产打包产物（dist.cmd 生成：dsh-console-<版本>/ + 同名 zip；可随时删掉重打）
 ├─ .gitignore            # 把运行状态文件与 dist/ 挡在版本库外
@@ -477,7 +519,7 @@ dsh-console/
 
 ## 6. 功能页面
 
-侧栏按用途分五组，共 18 个页面。**页面名与分组只在一处定义**（`public/app.js` 的 `ROUTES`）：
+侧栏按用途分五组。**页面名与分组只在一处定义**（`public/app.js` 的 `ROUTES`）：
 顶栏、侧栏、页面大标题、面包屑、首页快捷入口都由它推导，改名字不会再出现各处不一致。
 
 ### 工作台
@@ -505,7 +547,7 @@ dsh-console/
 
 ### 能力与资产
 
-给智能体扩能力的全局资产：模型目录 / 预设 / Skills（随工作目录加载）/ MCP / 插件。
+给智能体扩能力的全局资产：模型目录 / 预设 / Skills（随工作目录加载）/ MCP / 插件 / 知识库（随插件出现）。
 
 | 页面 | 路径 | 说明 |
 |---|---|---|
@@ -513,7 +555,8 @@ dsh-console/
 | 智能体预设 | `#/agent/manage` | `agentPresets/list / read / select / copy / deletePreset` + `settings/openAgentPresetDirectory` |
 | Skills 管理 | `#/skills/manager` | 扫描 4 个技能根目录（项目 `.dsh/skills`、项目 `.agents/skills`、用户 `~/.dsh/skills`、用户 `~/.agents/skills`），解析 `SKILL.md` frontmatter |
 | MCP 服务 | `#/mcp/manager` | 读 `cordis.patch.yml` + 交叉验证插件树 + TCP 探测 `127.0.0.1:11000` + 真实 MCP 握手 |
-| 插件 | `#/plugin/manager` | `dsh --profile web --dump-config` 解析插件树（本机实测 135 个 / 3 个来源层）+ **动态插件清单** `dynamicCordisRunner/inventory`（只读）+ `pluginInventory/list` 运行时清单（本机实测 157 条，含 fiber 阶段）——两个数都随 DSH 版本变，别当常量 |
+| 插件 | `#/plugin/manager` | `dsh --profile web --dump-config` 解析插件树（规模随部署而变）+ **动态插件清单** `dynamicCordisRunner/inventory`（只读）+ `pluginInventory/list` 运行时清单（含 fiber 阶段）——两个清单的规模都随 DSH 版本变，别当常量 |
+| 知识库 | `#/knowledge` | 装了 `dsh-knowledge` 插件才可用；装载插件自带的库 / 文档 / 检索管理界面，数据走 `/api/kb/*` 通道（见[「知识库（dsh-knowledge 插件）」](#知识库dsh-knowledge-插件)一节） |
 
 ### 平台设置
 
@@ -523,6 +566,7 @@ dsh-console/
 |---|---|---|
 | 凭据 | `#/credentials` | `credentials/describe`（**按名查询**，列不出全部）/ `set` / `unset`，只显示键名不显示明文 |
 | 设置 | `#/settings` | 14 个命名空间（随部署变），**schema 驱动表单**（union→下拉、number→数字框、secret→只写密码框、credential-ref→凭据名候选、深结构→JSON 兜底），增量下发 `settings.mutate` |
+| 本地模型（知识库） | `#/knowledge/models` | 装了 `dsh-knowledge` 插件才可用；管理 embedding / 重排 / OCR 本地模型的下载与健康状态（插件自带界面）。**不在侧栏**——从知识库页右上角的「🧩 本地模型」按钮进入 |
 
 ### 系统运行
 
@@ -531,7 +575,7 @@ dsh-console/
 | 页面 | 路径 | 说明 |
 |---|---|---|
 | 后台作业 | `#/jobs` | `session/control` 流的 jobs/queue 帧（**宿主级：可切「全部会话」**）+ 审批 + 提问 |
-| 系统状态 | `#/system/host` | 宿主概要（`session/modelCatalog` + `session/list` + 本机 dsh 版本/运行实例 rev 拼装）+ 会话用量投影 + 各项平台资源计数 + **🧪 全模块自检**（51 项 / 18 个模块，全站唯一入口）+ **🧪 契约自检**（12 项） |
+| 系统状态 | `#/system/host` | 宿主概要（`session/modelCatalog` + `session/list` + 本机 dsh 版本/运行实例 rev 拼装）+ 会话用量投影 + 各项平台资源计数 + **🧪 全模块自检**（覆盖全部功能模块，全站唯一入口）+ **🧪 契约自检** |
 
 ### 时空智能体页内置能力
 
@@ -556,10 +600,10 @@ dsh-console/
 
 | 层级 | 入口 | 规模 | 覆盖 |
 |---|---|---|---|
-| **全模块自检** | 系统状态页的 **🧪 全模块自检** | `PAGE_CHECKS` 共 **51 项 / 18 个模块**（10 项标 `opt`，失败只提示不判死） | 一次跑完全部模块依赖的真实接口；先检查基础链路（认证 + 当前会话），失败则直接给出**受影响功能模块**横幅；每个模块行可单独「重跑」 |
-| **契约自检** | 系统状态页的 **🧪 契约自检** | **12 项**（`runContractCheck`） | 只打主链路：认证 / 会话 / 模型目录 / 设置 schema / 技能 / 命令 / 引用 / 插件运行时 / 反馈 / 两条流 / dsh CLI |
+| **全模块自检** | 系统状态页的 **🧪 全模块自检** | `PAGE_CHECKS` 定义的全部检查项，覆盖全部功能模块（标 `opt` 的失败只提示不判死） | 一次跑完全部模块依赖的真实接口；先检查基础链路（认证 + 当前会话），失败则直接给出**受影响功能模块**横幅；每个模块行可单独「重跑」 |
+| **契约自检** | 系统状态页的 **🧪 契约自检** | `runContractCheck` 定义的关键路径 | 只打主链路：认证 / 会话 / 模型目录 / 设置 schema / 技能 / 命令 / 引用 / 插件运行时 / 反馈 / 两条流 / dsh CLI |
 
-两者都**打真实接口**，不 mock。功能自检**只有系统状态页那一个入口**（此前散落在各页的入口已合并，避免同一件事在 18 页里各测一遍）。
+两者都**打真实接口**，不 mock。功能自检**只有系统状态页那一个入口**（此前散落在各页的入口已合并，避免同一件事在各页里各测一遍）。
 
 ### 全量回归
 
@@ -569,9 +613,9 @@ dsh-console/
 
 | 脚本 | 规模 | 测什么 |
 |---|---|---|
-| `node tools/test-api.mjs` | **97 项** | 端点契约 + 页面不变量（自动挑一条真实会话，缺会话直接报错退出） |
-| `node tools/render-all.mjs` | 全部 18 页 | 把整个 `app.js` 装进 node 沙盒跑真实启动流程，逐页断言骨架 / 自检卡 / Markdown 渲染 |
-| `node tools/page-audit.mjs` | **81 项** | 路由 / 帮助卡 / 自检项的命名约定一致性（写错会静默失效），外加端点只读探测 |
+| `node tools/test-api.mjs` | 端到端 | 端点契约 + 页面不变量（自动挑一条真实会话，缺会话直接报错退出） |
+| `node tools/render-all.mjs` | 全部页面 | 把整个 `app.js` 装进 node 沙盒跑真实启动流程，逐页断言骨架 / 自检卡 / Markdown 渲染 |
+| `node tools/page-audit.mjs` | 静态审计 | 路由 / 帮助卡 / 自检项的命名约定一致性（写错会静默失效），外加端点只读探测 |
 | `node tools/sandbox-render.mjs` | 分节 | 抽取真实函数离线复现模型发现与凭据页（含降级路径） |
 | `node tools/cdp-chat-check.mjs` | 真机 | 用本机 Edge + CDP 打开对话页，量真实 DOM（消息行 / 工具卡 / 表格 / 列表 / 代码块 / 轮次跳转）并收集运行时错误；没装 Edge 时自动跳过 |
 
@@ -588,7 +632,7 @@ dsh-console/
 | 历史被重建时要丢掉"正在流式的气泡"引用 | `loadChatHistory()` 会把 `#chatlog` 整体重写，旧气泡节点已被丢弃；不把 `Chat.cur/curKey` 清掉的话，后续增量写进废弃节点 —— 这条回复一个字都看不见。清掉后增量会开新气泡，完整消息到达时再校正全文 | `loadChatHistory()` 开头 |
 | 已选附件标签属于"每次重绘都要重贴"的那一类 | `State.pendingImage/pendingFile` 是状态，标签在 `#attachpreview` 里；`render()` 末尾会重贴（否则出现"看不见但还会发出去"） | `render()` 末尾的 `renderAttachPreview()` |
 
-上面这几条都有回归断言盯着：`node tools/test-api.mjs` 的「交互状态不被重绘冲掉」与「静态不变量」两节（共 21 项）。
+上面这几条都有回归断言盯着：`node tools/test-api.mjs` 的「交互状态不被重绘冲掉」与「静态不变量」两节。
 
 ---
 
@@ -608,14 +652,18 @@ dsh-console/
 | `GET /api/local/deliverables` | `cwd=<目录>&limit=80&days=N` | 工作目录内最近落盘的成果文件（真实 `stat`） |
 | `GET /api/local/download` | `path=<文件>` | 单文件下载（UTF-8 文件名安全编码） |
 | `GET /api/local/attachment` | `sessionId=<会话>&attachmentId=<附件>`；`download=1` 带下载文件名 | 会话图片附件的原始字节（服务端替浏览器调 `session/attachment`，因为 `<img>` 带不上 DSH 的会话 cookie）。取不到时回 404 + `{error,code}` |
+| `/api/kb/*` | 插件界面的任意路径 | 等价转发到 DSH 主机的 `/knowledge/*`（dsh-knowledge 插件后端）。请求体原样转发、不设超时（导入 / 重建索引是长任务，浏览器断开会把中止传下去）、响应原样回传；插件未装时回明确的 unavailable，不报假故障 |
+| `GET /api/kb-status` | — | 知识库插件可用性（`{available, origin, route}`） |
+| `GET /api/kb-client.js` | — | 从本机已装的插件里取回的插件界面代码（运行时取，不落第二份拷贝） |
+| `GET /api/kb-react` | — | 内置 React 运行时的位置（`public/react/`，构建期抽取）；浏览器按它给出的 URL 再取字节 |
 
 其余 `/api/*` 一律**原样转发**到 `DSH_ORIGIN`，包括：
 
 - Typert Remote 端点：`POST /api/session/list`、`session/follow`、`settings/mutate` 等（控制台把旧的 `ns.method` 调用翻译成 `ns/method` + `{args}`，映射表在 `API.MAP`）
 - Typert Remote 通道：`POST /api/<namespace>/<method>`，信封为 `{ args: {…} }`
   （`commands/list`、`commands/execute`、`fileReferences/list`、`messageFeedback/*`、`pluginInventory/list`、
-  `sessionReferenceResolver/candidates` 等 —— `app.js` 里出现的可调用端点共 **67 个**，其中 **61 个**由 `API.MAP` 翻译，其余直接以 `ns/method` 调用。
-  DSH 0.1.5-rc.2 本机可调用面共 **84 个**）
+  `sessionReferenceResolver/candidates` 等 —— `app.js` 里的可调用端点，绝大部分由 `API.MAP` 翻译成这个形态，
+  少数直接以 `ns/method` 调用；完整映射以 `app.js` 的 `API.MAP` 为准，条目随功能增减）
 - 下载域：`GET /api/session.export?sessionId=…&includeDescendants=true`（会话日志 ZIP，按字节转发）
 - WebSocket：`/api/remote.mux`（逻辑流：`session/control` 状态、`session/follow` 事件、`$events` 审批与提问）
 
@@ -627,7 +675,7 @@ dsh-console/
 
 每一项显示内容都来自以下之一：
 
-1. **DSH 接口**——会话、技能、MCP、插件、模型、目标、子代理、设置、凭据、作业
+1. **DSH 接口**——会话、技能、MCP、插件、模型、目标、子代理、设置、凭据、作业、知识库（dsh-knowledge 插件的 `/knowledge/*` 服务）
 2. **DSH 会话事件流**——轨迹、交付物路径、工作流运行、计划/任务状态、工具卡片的宿主视图
 3. **本机配置文件**——`~/.dsh/profiles/web/cordis.patch.yml`、`~/.dsh/settings.yaml`
 4. **本机文件系统**——技能目录扫描、目录浏览、交付物扫描
@@ -806,7 +854,7 @@ dsh 调用失败（npx 缓存（经 shell）→ …\dsh.cmd: EPERM； ↳ 重定
 ③ 用 `npx @deepseek-ai/dsh --version` 跑一次，让 npx 缓存里留下垫片（控制台会自动找到）。
 
 > 即使 `--dump-config` 一直不可用，插件页也不是空的：页面上半部分「宿主插件运行时清单」
-> 走的是运行中的 DSH 的 `pluginInventory/list` 接口（157 条带 fiber 阶段），它不依赖 dsh CLI。
+> 走的是运行中的 DSH 的 `pluginInventory/list` 接口（带 fiber 阶段），它不依赖 dsh CLI。
 > 两个来源互为印证，这是刻意设计的。
 
 ### ③ MCP 页面工具数为 0 / 握手失败
@@ -863,7 +911,7 @@ Get-Content start.cmd | Where-Object { $_ -match '[^\x00-\x7F]' }   # 应无输�
 | 动态 Cordis 插件只能看 | 装载/卸载是审批门控的模型侧动作（`dsh-tool-cordis`） | 插件页只读展示清单 |
 | 附件上限 8 MB | 控制台要经本机后端把 base64 JSON 转发一次 | 前端直接拦下并提示 |
 | 会话里只能显示**图片**附件 | `session/attachment` 的返回类型就是 `ImageAttachmentRef`，文件取不到字节 | 文件块展示名称/大小；文件本身从「交付物」页或工作目录找 |
-| 契约自检只覆盖关键路径 | 12 项，不是全部端点 | 全量覆盖用系统状态页的 **🧪 全模块自检**（51 项 / 18 个模块，全站唯一入口）；全量回归用 `node tools/test-api.mjs`（97 项） |
+| 契约自检只覆盖关键路径 | 不是全部端点 | 全量覆盖用系统状态页的 **🧪 全模块自检**（全站唯一入口）；全量回归用 `node tools/test-api.mjs` |
 | 会话内没有「上下文已压缩」分隔条 | 本机全量事件里一个 compaction 样本都没有（活动会话上下文占用低，没触发过），块类型名也无从确证 | 轨迹页已把 `compaction/start\|summary\|end` 折叠成 `compacted` 节点；聊天页那条分隔条**等真实触发后再按实况补**，不凭猜造 UI |
 | 值级失败要显式判 | `sessionFeedback/record` 这类端点的失败是**值级联合类型**（`{ok:false,error}` 也是成功响应） | 代码里显式判 `ok === false`；回归脚本有专门一条盯它 |
 | **改完设置界面"没反应"** | 三处叠加：① `loadSettings()` 有 8s loader TTL，写完之后裸调它会**回读到旧值**；② 前端 `applyTheme` 的 system 分支曾被写成恒等于 `'dark'`；③ `setThemePreference` 曾无条件 `if (v === cur) return`，settings 还没到手时 `themePreference()` 兜底返回 `system`，点「跟随系统」等于什么都没发生 | 写路径一律**用写接口回传的命名空间对象并回本地 State**（`mergeNsLocal`，零额外往返）或改用 `loadSettings(true)` 绕过 TTL；`applyTheme` 现在按 `dark ? 'dark' : 'light'` 落值；early-return 先判"是否真的知道服务端当前值"。回归断言钉住这三条 |
@@ -878,7 +926,7 @@ Get-Content start.cmd | Where-Object { $_ -match '[^\x00-\x7F]' }   # 应无输�
 ## 12. 排障顺序
 
 1. `node server.cjs --check`（或双击 `check.cmd`）—— 部署层前提，逐项列出
-2. `node tools/test-api.mjs` —— 97 项回归；红了就知道是哪一层变了
+2. `node tools/test-api.mjs` —— 端到端回归；红了就知道是哪一层变了
    ```powershell
    $env:SID='<sessionId>'; $env:CONSOLE='http://127.0.0.1:3081'; node tools/test-api.mjs
    ```

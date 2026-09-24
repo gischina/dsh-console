@@ -8,6 +8,7 @@
  * DSH Console 本地服务
  * - 静态托管 ./public
  * - /api/* 反向代理到 DSH 主机（默认 http://127.0.0.1:3080），解决浏览器跨域
+ * - /api/kb/* 转发到 DSH 主机的 /knowledge/*（知识库插件自带的后端）
  * 仅绑定 127.0.0.1，不对外暴露。
  */
 const http = require('node:http');
@@ -667,16 +668,25 @@ function loadPlugins(force) {
     const b = lines[i].match(/^# == (.+)$/);
     if (b) { layer = shortPath(b[1].trim()); layers[layer] = (layers[layer] || 0) + 1; continue; }
     const idm = lines[i].match(/^- id: (.+)$/);
-    if (idm && lines[i + 1] && /^  name: '(.+)'$/.test(lines[i + 1])) {
-      const name = lines[i + 1].match(/^  name: '(.+)'$/)[1];
+    // ⚠️ name 的引号是可选的（等同 YAML 标量）：
+    //   · bundle 层（官方包）写的是带引号 → name: '@deepseek-ai/dsh-llm'
+    //   · 第三方插件层写的是不带引号 → name: dsh-knowledge/knowledge
+    // 早期只认带引号那种，于是**第三方插件会被整层丢掉**（层标题还在、条目全空）——
+    // 表现就是「插件页查不到某个已装的插件」，但它其实在正常运行。
+    // 这里两种都收：先剥掉成对的可选引号，再取标量。
+    const nm = lines[i + 1] && lines[i + 1].match(/^  name: (?:'([^']*)'|"([^"]*)"|([^#\s][^#]*?))\s*$/);
+    if (idm && nm) {
+      const name = (nm[1] ?? nm[2] ?? nm[3] ?? '').trim();
       // 该行往后 6 行内若出现 disabled: true 则视为禁用
       let disabled = false;
       for (let k = i + 2; k < Math.min(i + 8, lines.length); k++) {
         if (/^- id: /.test(lines[k]) || /^# == /.test(lines[k])) break;
         if (/^\s*disabled:\s*true\s*$/.test(lines[k])) { disabled = true; break; }
       }
-      const pkg = name.replace('@deepseek-ai/', '');
-      plugins.push({ id: idm[1].trim(), name, pkg, layer: shortPath(layer), disabled });
+      if (name) {
+        const pkg = name.replace('@deepseek-ai/', '');
+        plugins.push({ id: idm[1].trim(), name, pkg, layer: shortPath(layer), disabled });
+      }
     }
   }
   PLUGIN_CACHE = { source: 'dump-config', via: shortPath(how), profile, at: new Date().toISOString(), layers, plugins };
@@ -890,6 +900,155 @@ async function probeMcp(server) {
   return out;
 }
 
+/* ============ 知识库插件在位探测 ============
+   · true  → 路由在（DSH 上有插件实例在 webServer 上注册了 /knowledge 前缀）
+   · false → 不在：要么没装这个插件，要么装了但改完没重启 dsh web（该 profile 的 HMR 是关闭的）
+   · null  → 没探过（首次调用时现探一次）
+
+   判据刻意用 GET /knowledge/config 而不是 GET /knowledge（前缀根本身）：
+   插件的 http 路由表里**没有**空前缀这一条，前缀根本身会落到 404；
+   拿它当判据会把"装着"误判成"没装"。config 是 GET 且只读，是最轻的一条。 */
+let KB_AVAILABLE = null;
+async function kbProbe(timeoutMs = 4000) {
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), timeoutMs);
+  try {
+    const r = await fetch(DSH + '/knowledge/config', {
+      method: 'GET', headers: { ...authHeaders() }, signal: ac.signal,
+    });
+    // 401 也算在位：路由是插件注册的，只是这次没带上有效会话 cookie
+    KB_AVAILABLE = r.ok || r.status === 401 || r.status === 403;
+  } catch {
+    KB_AVAILABLE = false;
+  } finally {
+    clearTimeout(t);
+  }
+  return KB_AVAILABLE;
+}
+
+/** 插件不在位时回给前端：404 + 一句能照做的话，不冒充故障 */
+function kbUnavailable(res) {
+  res.writeHead(404, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+  res.end(JSON.stringify({
+    ok: false,
+    error: {
+      code: 'knowledge-unavailable',
+      message: 'DSH 主机上没有知识库服务。需要在该 profile 里加载知识库插件，'
+        + '改完重启 dsh web（其 HMR 已关闭）后本页即可用。',
+    },
+  }));
+}
+
+/* ============ 知识库：两处运行时资源的位置 ============
+   两个都「找得到就用、找不到就明说」，绝不写死某台机器的绝对路径
+   （换台机器 DSH 的安装位置就变了；写死等于把控制台绑死在一台机器上）。
+
+   ① 插件的浏览器端：<profile>/node_modules/dsh-knowledge/lib/client.js
+      优先问 DSH 自己（--dump-config 里带包的真实位置），失败再退回按 profile 目录拼。
+   ② React 运行时：DSH 前端产物 assets/ 里那个含 react 导出符号的 JS。
+      它的文件名带内容哈希（如 vendor-CCJJTK99.js），升级 DSH 就会变，
+      所以只能扫目录 + 校验内容，不能记文件名。 */
+const KB_PLUGIN_PKG = 'dsh-knowledge';
+let KB_CLIENT_PATH = null;
+
+/** profile 名与 ~/.dsh 家目录：沿用本文件其它地方的取法（不新造一套） */
+function kbProfile() { return process.env.DSH_PROFILE || 'web'; }
+function kbDshHome() { return process.env.DSH_HOME || path.join(process.env.USERPROFILE || process.env.HOME || '', '.dsh'); }
+
+function kbResolveClientPath() {
+  if (KB_CLIENT_PATH && fs.existsSync(KB_CLIENT_PATH)) return KB_CLIENT_PATH;
+  // 首选：问 dsh 自己（与「插件」页拿清单同一个来源，能反映真实的 node_modules 布局）
+  try {
+    const { out } = runDsh(['--profile', kbProfile(), '--dump-config']);
+    const m = /[^\s"'`]*dsh-knowledge[\\/]lib[\\/]client\.js/.exec(String(out));
+    if (m) { KB_CLIENT_PATH = m[0]; return KB_CLIENT_PATH; }
+    const p = /[^\s"'`]*node_modules[\\/]dsh-knowledge\b/.exec(String(out));
+    if (p) {
+      const cand = path.join(p[0], 'lib', 'client.js');
+      if (fs.existsSync(cand)) { KB_CLIENT_PATH = cand; return KB_CLIENT_PATH; }
+    }
+  } catch { /* 下面按 profile 目录回退 */ }
+  const cand = path.join(kbDshHome(), 'profiles', kbProfile(), 'node_modules', KB_PLUGIN_PKG, 'lib', 'client.js');
+  if (fs.existsSync(cand)) KB_CLIENT_PATH = cand;
+  return KB_CLIENT_PATH;
+}
+
+function kbSendClientJs(res) {
+  const file = kbResolveClientPath();
+  if (!file) {
+    res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' });
+    return void res.end(JSON.stringify({ error: '没有在本机找到知识库插件的界面文件（' + KB_PLUGIN_PKG + '/lib/client.js）' }));
+  }
+  let buf;
+  try { buf = fs.readFileSync(file); }
+  catch (e) {
+    res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
+    return void res.end(JSON.stringify({ error: '读取插件界面文件失败：' + e.message }));
+  }
+  res.writeHead(200, {
+    'content-type': 'text/javascript; charset=utf-8',
+    'content-length': String(buf.length),
+    // 插件文件随 npm 安装落地，内容寻址式缓存即可（升级后 mtime/size 变，浏览器自会重取）
+    'cache-control': 'no-cache',
+  });
+  res.end(buf);
+}
+
+/** 控制台自带的 React 运行时 —— 构建期由 tools/extract-react-runtime.mjs 从 DSH 前端产物里抽出来，
+ *  落在 public/react/react-runtime.<hash>.js + manifest.json，随控制台一起分发。
+ *
+ *  ⚠️ 为什么不直接把 DSH 前端产物端给浏览器 import：
+ *  那是一整个 DSH 前端（543 KB），末尾带自启动代码（找 #root 把应用 run 起来）。
+ *  控制台里 import 它 → 会在控制台页面里再启动一遍 DSH，实测直接抛 "web app: missing #root"。
+ *  所以抽取脚本做了两件事：① 剥掉自启动尾巴；② 只保留 react / react-dom /
+ *  react-dom/client / react/jsx-runtime 及其依赖，其余 DSH 代码全部丢掉（543 KB → 173 KB）。
+ *  详见 tools/extract-react-runtime.mjs 顶部的说明。 */
+const KB_REACT_DIR = path.join(ROOT, 'react');
+let KB_REACT_ASSET = null;
+function kbFindReactAsset() {
+  const mfFile = path.join(KB_REACT_DIR, 'manifest.json');
+  if (KB_REACT_ASSET && fs.existsSync(KB_REACT_ASSET.file)) return KB_REACT_ASSET;
+  let mf;
+  try { mf = JSON.parse(fs.readFileSync(mfFile, 'utf8')); }
+  catch {
+    return {
+      ok: false,
+      error: '控制台缺少内置 React 运行时（public/react/）。'
+        + '在控制台目录跑一次 `node tools/extract-react-runtime.mjs` 生成即可（需要本机装有 DSH）。',
+    };
+  }
+  const file = path.join(KB_REACT_DIR, mf.file);
+  if (!fs.existsSync(file)) {
+    return { ok: false, error: 'public/react/manifest.json 指向的 ' + mf.file + ' 不存在，请重新生成。' };
+  }
+  let size = 0;
+  try { size = fs.statSync(file).size; } catch { /* 忽略 */ }
+  KB_REACT_ASSET = { ok: true, url: '/api/kb-react/' + mf.file, file, size, source: mf.source, exports: mf.exports };
+  return KB_REACT_ASSET;
+}
+
+function kbSendReactAsset(res, name) {
+  const info = kbFindReactAsset();
+  // 只认 manifest 里那一个文件，避免把目录里别的东西也端出去
+  if (!info.ok || name !== path.basename(info.file)) {
+    res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' });
+    return void res.end(JSON.stringify({ error: '没有这个运行时文件' }));
+  }
+  let buf;
+  try { buf = fs.readFileSync(info.file); }
+  catch (e) {
+    res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
+    return void res.end(JSON.stringify({ error: '读取运行时文件失败：' + e.message }));
+  }
+  res.writeHead(200, {
+    'content-type': 'text/javascript; charset=utf-8',
+    'content-length': String(buf.length),
+    // 文件名里带内容哈希（react-runtime.<hash>.js），可以放心长缓存
+    'cache-control': 'public, max-age=604800, immutable',
+  });
+  res.end(buf);
+}
+
 async function proxy(req, res, pathname, search) {
   const chunks = [];
   for await (const c of req) chunks.push(c);
@@ -939,6 +1098,113 @@ async function proxy(req, res, pathname, search) {
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   const pathname = url.pathname;
+
+  /* ============ 知识库通道：/api/kb/* → DSH 主机 /knowledge/* ============
+     为什么单独一条、不走通用 /api/*：
+     ① 那是 DSH 的 RPC 代理（前端用它打 ns/method），路径语义完全不同，
+        塞进来会让"所有 /api/* 都是 DSH RPC"这个前提失效；
+     ② 知识库插件后端在 DSH 上是**独立前缀路由**（/knowledge），与 DSH 自身的
+        API 前缀不共享鉴权约定，分开铺一层等价映射更好读、也更好退。
+     ③ 插件浏览器端是写死 `/knowledge/...` 的，这里等价映射成 `/api/kb/...`，
+        前端插件桥加载插件时会拦截改写；控制台自己的页面则直接用 /api/kb/*。
+
+     与 /api/* 的三处刻意差异（都是插件侧真实需求）：
+     · **请求体原样转发**，不解析、不改写 —— 知识库的检索 / 入库交给插件自己实现；
+     · **不设超时**，反而要防浏览器断开 —— 导入目录树、重新索引是分钟级的长任务，
+       中止要能传下去（与 directoryPicker/pick 同一套 AbortController 处理）；
+     · **响应原样回传**（含 JSON 里的附件 / 预览字节），不做信封解包。
+
+     插件没装时不报"故障"，而是回 404 + 一句明确的 unavailable：知识库是可选
+     能力，控制台的其余功能不依赖它。 */
+  if (pathname === '/api/kb' || pathname.startsWith('/api/kb/')) {
+    const rel = pathname.slice('/api/kb'.length) || '/';
+    const target = DSH + '/knowledge' + rel + (url.search || '');
+    const ac = new AbortController();
+    const onClose = () => { if (!res.writableEnded) ac.abort(); };
+    res.on('close', onClose);
+    const send = () => fetch(target, {
+      method: req.method,
+      headers: {
+        'content-type': req.headers['content-type'] || 'application/json',
+        ...(req.headers['accept'] ? { accept: req.headers['accept'] } : {}),
+        ...authHeaders(),
+      },
+      body: req.method === 'GET' || req.method === 'HEAD' ? undefined : req,
+      duplex: 'half',                       // 流式请求体：Node 的 fetch 要求显式声明
+      signal: ac.signal,
+    }).then(r => ({ ok: true, r }), e => ({ ok: false, e }));
+    const attempt = async () => {
+      let hit = await send();
+      // 令牌过期时 DSH 会回 401：就地换一次会话 cookie 再重发（与 /api/* 同策略）
+      if (hit.ok && hit.r.status === 401 && DSH_TOKEN) {
+        const again = await ensureDshAuth(true);
+        if (again.ok) hit = await send();
+      }
+      if (hit.ok && (hit.r.status === 404 || hit.r.status === 501) && !KB_AVAILABLE) {
+        // 首次就用 404 落地 → 记下来，避免每次开页都要先吃一次 404 才知道没装
+        KB_AVAILABLE = false;
+      }
+      return hit;
+    };
+    try {
+      let hit = await attempt();
+      if (hit.ok && hit.r.status === 404 && KB_AVAILABLE === null) {
+        // 探测一次真实状态：插件装了但路由没注册（DSH 没重启）与压根没装要分开说
+        await kbProbe();
+        hit = await attempt();
+      }
+      if (!hit.ok) throw hit.e;
+      if (hit.r.status === 404 && KB_AVAILABLE === false) return void kbUnavailable(res);
+      const headers = {
+        'content-type': hit.r.headers.get('content-type') || 'application/json',
+        'cache-control': 'no-store',        // 索引状态 / 统计随时在变，禁止浏览器缓存
+      };
+      const cd = hit.r.headers.get('content-disposition');
+      if (cd) headers['content-disposition'] = cd;
+      const buf = Buffer.from(await hit.r.arrayBuffer());
+      res.writeHead(hit.r.status, headers);
+      res.end(buf);
+    } catch (e) {
+      if (ac.signal.aborted) return;        // 客户端自己走了
+      res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ ok: false, error: { code: 'console-upstream', message: 'DSH 主机不可达: ' + e.message + '（目标 ' + DSH + '）' } }));
+    } finally {
+      res.off('close', onClose);
+    }
+    return;
+  }
+
+  if (pathname === '/api/kb-status') {
+    if (KB_AVAILABLE === null) await kbProbe();
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+    return void res.end(JSON.stringify({
+      available: KB_AVAILABLE === true,
+      origin: DSH,
+      route: DSH + '/knowledge',
+      at: new Date().toISOString(),
+    }));
+  }
+
+  /* 知识库插件的浏览器端文件：从 DSH profile 的 node_modules 里读，不落第二份拷贝。
+     GET /api/kb-client.js —— 插件的界面代码（控制台运行时装载它）
+     GET /api/kb-react      —— { ok, url }：控制台内置的 React 运行时（ES 模块）
+     为什么由控制台来发这两个：浏览器的同源限制决定了它没法直接读 DSH 的 3080；
+     插件界面文件则保持"运行时取回"——永远等于本机装的那一份（拷进 public/ 会随插件升级
+     静默过期，还会平白带上别人的 AGPL 代码与许可证义务）。
+     ⚠️ 但 React 运行时**必须**是控制台内置的一份（public/react/，构建期抽取）：
+     直接借用 DSH 整个前端产物的话，会在控制台里把 DSH 自己启动一遍。 */
+  if (pathname === '/api/kb-client.js') return void kbSendClientJs(res);
+  if (pathname === '/api/kb-react') {
+    const info = kbFindReactAsset();
+    res.writeHead(info.ok ? 200 : 404, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+    return void res.end(JSON.stringify(info));
+  }
+  /* 内置 React 运行时的字节（public/react/react-runtime.<hash>.js）。
+     浏览器按 /api/kb-react 给的 URL 直接 import 它；插件界面拿到的就是这一份 React。 */
+  if (pathname.startsWith('/api/kb-react/')) {
+    const name = path.basename(decodeURIComponent(pathname.slice('/api/kb-react/'.length)));
+    return void kbSendReactAsset(res, name);
+  }
 
   // 本地接口（不转发给 DSH）
   /* DSH 目标配置：地址 + 令牌。

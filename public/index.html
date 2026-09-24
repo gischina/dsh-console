@@ -20,6 +20,44 @@
   document.documentElement.dataset.theme = t;
   document.documentElement.style.colorScheme = t;
 })();
+/* 插件主题令牌桥：外来插件（如知识库）的界面用 DSH 的 --dsw-alias-* 变量上色。
+   控制台没有 DSH 那套令牌，缺了就全走插件的兜底值 —— 插件的兜底值是**浅色**的
+   （bg-base #f6f7f9 / bg-layer-1 #fff / label-primary #1f2329…），
+   而控制台默认是深色，于是深色下会出现"有些块是浅底深字、有些是深底浅字"的斑驳观感。
+   这里按控制台主题，把对应语义映射到本控制台已有的 --* 变量上。
+   ------------------------------------------------------------------
+   为什么写成样式表而不是把文件里的 `var(--dsw-x, #hex)` 换掉：
+   ① 兜底值是官方默认主题的取值，按控制台主题改它需要为双主题重算两套常量，容易与实现漂移；
+   ② 换行偏移会让插件 lib/ 体积反而变大（无收益）；
+   ③ 将来重装 / 升级插件，这里不用重做。
+   所以：**不碰插件文件**，只补变量，且每个变量都带与插件一致的兜底值。
+
+   ⚠️ 覆盖要**求全**：插件（当前版本）共引用 14 个 --dsw-* 令牌，漏一个就那一处
+   退回浅色兜底，表现就是"深色主题下这一块偏偏是亮的"。14 个全部列在下面的样式表里。
+   换插件版本后重新核对一遍：grep 插件 lib/client.js 里所有 --dsw- 开头的名字，
+   与下面逐个对齐即可（tools/ 里没有固化这一步，因为只在升级插件时才需要）。 */
+</script>
+<style>
+/* 两套主题共用一份映射：右侧值全是控制台自己的 --* 变量，
+   而 --* 本身在深/浅主题下取值不同，所以这里写一次就自动跟随主题切换。 */
+:root,
+:root[data-theme="light"] {
+  --dsw-alias-bg-base:                var(--bg);        /* 面板底 */
+  --dsw-alias-bg-layer-1:             var(--panel);     /* 卡片面 */
+  --dsw-alias-bg-layer-2:             var(--panel-2);   /* 次级面 */
+  --dsw-alias-bg-overlay:             var(--panel);     /* 浮层底 */
+  --dsw-alias-border-l2:              var(--line-2);
+  --dsw-alias-border-l3:              var(--line);
+  --dsw-alias-label-primary:          var(--txt);
+  --dsw-alias-label-primary-foreground: #fff;           /* 品牌色按钮上的字：两套主题都取白 */
+  --dsw-alias-brand-primary:          var(--brand);
+  --dsw-alias-state-error-primary:    var(--err);
+  --dsw-alias-state-warn-primary:     var(--warn);
+  --dsw-alias-state-success-primary:  var(--ok);
+  --dsw-alias-state-business-primary: var(--brand);
+  /* 主按钮 hover：插件自带兜底（#43454a 深灰），两套主题下观感都可接受，故保留不动 */
+}
+</style>
 </script>
 <link rel="stylesheet" href="/style.css">
 </head>

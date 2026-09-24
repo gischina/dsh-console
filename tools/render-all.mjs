@@ -30,6 +30,14 @@ const log = s => out.push(s);
 let fails = 0;
 const ok = (cond, label, extra) => { log((cond ? '  ✅ ' : '  ❌ ') + label + (extra ? ' — ' + extra : '')); if (!cond) fails++; };
 
+/* 读源码文本，**统一归一成 LF** 再交给断言。
+ * ⚠️ 踩过的坑（2026-09-24）：public/app.js 与 server.cjs 在本机是 **CRLF**，
+ *    而下面那些「抽取某个函数体」的正则全按 `\n` 写 —— 一个都匹配不上。
+ *    后果不是报错，而是 `xxxFn` 取到 null，紧接着 `xxxFn[0]` 抛异常，
+ *    把整个 try 块吞在一句「本轮改动断言」里，**后面 7 条断言从此再没跑过**。
+ *    所以这里统一归一：脚本里任何「读源码做正则」都必须走它。 */
+const readSrc = rel => fs.readFileSync(new URL(rel, import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+
 /* ---------------- 偏好初始态：跑前固定、跑完还原 ----------------
  * 「本页说明」的显隐存在真实项目文件 ui-prefs.yaml 里（设置页那个开关写的）。
  * 它一旦是 helpVisible:false（用户点过隐藏，或某次真机操作留下的），
@@ -172,7 +180,7 @@ const sandbox = {
 };
 const EXPORTS = ['Pages', 'State', 'ROUTES', 'PAGE_HELP', 'PAGE_CHECKS', 'EMPTY_GUIDE', 'render', 'boot',
   'runAllChecks', 'runModuleCheck', 'closeAllCheck', 'pageHelp', 'allCheckCard', 'emptyGuide', 'perfCard', 'recordPerf', 'Table',
-  'toggleHelp', 'provSectionHtml', 'renderScopeBar', 'moreDisc', 'SCOPE_BAR_OFF',
+  'toggleHelp', 'provSectionHtml', 'renderScopeBar', 'scopeChipHtml', 'moreDisc', 'SCOPE_BAR_OFF', 'SCOPE_BAR_GROUPS',
   // 消息操作条 / 反馈（第三十轮）
   'Chat', 'Turns', 'ChatRow', 'MD', 'msgActionsHtml', 'fbHtml', 'fbErrText', 'paintFeedback',
   'contextBadgeHtml', 'chatNavHtml', 'jumpTurn', 'toggleMsgUsage', 'FB_CATEGORIES', 'branchAtTurn',
@@ -275,20 +283,39 @@ const withTimeout = (p, ms, label) => Promise.race([
     c.rows.filter(x => !x.ok && isSandbox(x)).forEach(x => log('       🟡 沙盒预期 · ' + x.name + ' —— WS stub 不推帧；真实宿主已实测回 baseline，此项在浏览器里是通过的'));
   }
 
-  log('\n=== 本轮针对性断言（作用域条 / 会话当前标记 / 大模型页发现入口）===');
+  log('\n=== 本轮针对性断言（会话 chip / 会话当前标记 / 大模型页发现入口）===');
   try {
-    /* ① 作用域条：该显示的页显示、自己已展示会话身份的页不显示 */
-    const bar = id => {
-      S.renderScopeBar(S.ROUTES.find(x => x.id === id) || {});
-      return { shown: nodes.scopebar.style.display !== 'none', html: nodes.scopebar.innerHTML || '' };
+    /* ① 会话上下文 chip：2026-09-24 由「内容区顶部 43px 作用域条」压进各页页头。
+       沙盒的 DOM stub 不解析 HTML（innerHTML 只当字符串存），所以这里不查 DOM 结构，
+       而是断言**两段可判定的真相**：
+         · 选取规则 SCOPE_BAR_GROUPS / SCOPE_BAR_OFF —— 哪些页注入 chip；
+         · 载荷 scopeChipHtml() —— 注进去的内容长什么样。
+       DOM 层面「chip 真的进了 .page-title、且在 .pt-actions 之前」由真机 CDP 实测覆盖。 */
+    const on = ['trajectory', 'deliverables', 'models', 'skillMgr'];
+    const off = ['home', 'sessions', 'workspace', 'chat'];
+    const shows = id => {
+      const r = S.ROUTES.find(x => x.id === id) || {};
+      return S.SCOPE_BAR_GROUPS.includes(r.group) && !S.SCOPE_BAR_OFF.includes(r.id);
     };
-    const off = ['home', 'sessions', 'workspace', 'chat'].filter(id => bar(id).shown);
-    ok(!off.length, '作用域条在「本页已展示会话身份」的 4 页关闭', off.join(','));
-    const on = ['trajectory', 'deliverables', 'models', 'skillMgr'].filter(id => !bar(id).shown);
-    ok(!on.length, '作用域条在「跟随会话但不显示会话身份」的页保留', on.join(','));
-    const tb = bar('trajectory');
-    ok(!/💬 会话 <b class="mono">/.test(tb.html), '作用域条不再把截断的 session id 当会话主标签');
-    ok(/title="当前会话 ID：/.test(tb.html), '完整会话 ID 移入 title（可悬停 / 可读全）');
+    const ON_WRONG = on.filter(id => !shows(id));
+    ok(!ON_WRONG.length, '会话 chip 注入「跟随会话但不显示会话身份」的页', ON_WRONG.join(','));
+    const OFF_WRONG = off.filter(id => shows(id));
+    ok(!OFF_WRONG.length, '会话 chip 不在「本页已展示会话身份」的 4 页重复', OFF_WRONG.join(','));
+    // 旧 bar 容器不再被写入：内容全在页头，容器恒空（恒 display:none 由 renderScopeBar 收尾）
+    S.renderScopeBar(S.ROUTES.find(x => x.id === 'trajectory') || {});
+    ok(!String(nodes.scopebar.innerHTML || '').trim(), '旧作用域条容器不再承载内容（高度归零的根据）',
+      String(nodes.scopebar.innerHTML || '').slice(0, 40));
+
+    const chip = S.scopeChipHtml();
+    ok(!/💬 会话 <b class="mono">/.test(chip), '会话 chip 不再把截断的 session id 当会话主标签');
+    ok(/title="当前会话 ID：/.test(chip), '完整会话 ID 移入 title（可悬停 / 可读全）');
+    ok(/class="scope-chip"/.test(chip) && !/scope-item/.test(chip),
+      'chip 用独立类名命名空间（旧 .scope-item 的样式已删，不残留引用）');
+    // 转义面（读源码，不动运行态）：chip 的可变字段来自宿主，进 HTML 前必须过 fmt.esc
+    const chipSrc = (code.match(/function scopeChipHtml\(\)[\s\S]*?\n\}/) || [''])[0];
+    ok(/fmt\.esc\(sessLabel\)/.test(chipSrc) && /fmt\.esc\(hint\)/.test(chipSrc)
+      && /fmt\.esc\(shortSid\(/.test(chipSrc) && /fmt\.attr\(s\.parentSessionId\)/.test(chipSrc),
+      '会话标题 / 悬停提示 / 短 ID / 父会话 id 全部经转义（title 与属性不破）');
 
     /* ② 会话列表：当前身份只在操作列表达，行上不做任何标记 */
     const sh = S.Pages.sessions();
@@ -593,12 +620,12 @@ const withTimeout = (p, ms, label) => Promise.race([
     ok(/静态清单/.test(provHtml), '供应商接入卡说明了「静态清单」的含义');
 
     // ④ 界面偏好：改存项目 yaml（不走 localStorage、不写 DSH 设置；json→yaml 迁移读）
-    const appSrc = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+    const appSrc = readSrc('../public/app.js');
     const prefFn = /\nfunction uiPrefs\(\)[\s\S]*?\n\}\n/.exec(appSrc);
     ok(!/localStorage\.getItem/.test(prefFn ? prefFn[0] : ''), 'uiPrefs() 读取路径不再用 localStorage');
     ok(/\/api\/local\/prefs/.test(appSrc), '界面偏好走 /api/local/prefs（项目内 ui-prefs.yaml）');
     ok(/await loadUiPrefs\(\)/.test(appSrc), '启动时先 await loadUiPrefs() 再首次 render');
-    const srvSrc = fs.readFileSync(new URL('../server.cjs', import.meta.url), 'utf8');
+    const srvSrc = readSrc('../server.cjs');
     ok(/ui-prefs\.yaml/.test(srvSrc) && /'\/api\/local\/prefs'/.test(srvSrc), 'server.cjs 有 ui-prefs.yaml 与 /api/local/prefs 路由');
     ok(/function prefsToYaml|function prefsFromYaml/.test(srvSrc) && !/writeJsonSafe\(UI_PREFS_FILE/.test(srvSrc), '偏好落盘走 yaml 读写器（不再写 JSON）');
 
@@ -667,8 +694,8 @@ const withTimeout = (p, ms, label) => Promise.race([
 
   log('\n=== 折叠条 / 轮次导航 / 未分组 / 侧栏（本轮四项反馈）===');
   try {
-    const appSrc2 = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
-    const cssSrc = fs.readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
+    const appSrc2 = readSrc('../public/app.js');
+    const cssSrc = readSrc('../public/style.css');
 
     /* ① 折叠条已删：确认 pushChatRow 不再调用 syncTurnProc、收尾段也不再补算、
        批量重建开关（_bulk）随之成为死代码一并移除 */

@@ -12,7 +12,7 @@
 | **DSH** | 已安装，且 `dsh web` 正在运行（本控制台是它的前端 + 反向代理，**没有 DSH 它没有内容可显示**） |
 | **DSH 版本** | 本包基于 DSH **0.1.5-rc.2** 开发与回归；其他版本未测，异常时先核对 DSH 版本 |
 | 操作系统 | Windows / macOS / Linux 都可以 |
-| 磁盘 | 约 0.5 MB（解压后 9 个文件） |
+| 磁盘 | 占用很小（零依赖，没有 node_modules） |
 
 启动 DSH：
 ```powershell
@@ -51,6 +51,22 @@ dsh web
 
 > **没装 GeoScene 的机器上，控制台其余功能完全正常**，只有「MCP 服务」页显示离线 ——
 > 那是真实探测结果，不是故障。
+
+---
+
+## 知识库（可选，dsh-knowledge 插件）
+
+DSH 那边装了第三方插件 **dsh-knowledge** 的话，控制台会自动多出「知识库」与「本地模型」
+两个页面（控制台侧零配置，界面与数据都来自插件）；没装则这两个页面显示引导卡，其余功能不受影响。
+
+插件安装（装完**重启 `dsh web`**）：
+
+```powershell
+dsh plugin --profile web add dsh-knowledge
+```
+
+> 插件的界面代码在运行时从本机已装的插件里取——所以生产包不随带插件代码，
+> 页面上跑的永远是你本机装的那一份。
 
 ---
 
@@ -113,11 +129,12 @@ node server.cjs --check
 ## 5. 目录里都是什么
 
 ```
-server.cjs       唯一后端：静态页面 + 反向代理 + WebSocket 桥（零第三方依赖）
+server.cjs       唯一后端：静态页面 + 反向代理 + WebSocket 桥 + 知识库通道（零第三方依赖）
 public/
   index.html     页面骨架
   app.js         界面全部逻辑（已压缩）
   style.css      样式
+  react/         内置 React 运行时（知识库插件界面依赖，构建期抽取）
 start.cmd        Windows 启动器（双击即用）
 check.cmd        Windows 部署自检（双击即用）
 README.md        本文件
@@ -156,6 +173,10 @@ Copyright 2026 liwei (易智瑞西安) <liwei@geoscene.cn>。
 
 **插件页 / MCP 页显示「探测失败」**
 这两页依赖 `dsh` 命令在 PATH 里，以及本机 DSH 的配置目录可读。`check.cmd` 的第 [6][7] 项能看出是哪一步断的。
+
+**知识库 / 本地模型页面显示引导卡或「不可用」**
+这两个页面来自第三方插件 `dsh-knowledge`：确认插件已安装（`dsh plugin --profile web add dsh-knowledge`）
+且装完**重启了 `dsh web`**。没装的话页面保持引导状态，其余功能不受影响。
 
 **MCP 页里 GeoScene Pro 显示离线 / 工具数为 0**
 按顺序查：① GeoScene Pro 本身没启动；② `StartGeoSceneMcp` 不在 PATH 上；③ **在 Git Bash 里启动了 DSH** ——

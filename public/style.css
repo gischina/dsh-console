@@ -106,18 +106,79 @@ a{color:inherit;text-decoration:none}
 .side a:hover{background:var(--panel);color:var(--txt)}
 .side a.on{background:linear-gradient(90deg,rgba(47,123,255,.22),transparent);color:#fff;box-shadow:inset 2px 0 0 var(--brand)}
 .side .ico{width:16px;text-align:center;opacity:.9}
-/* 作用域上下文条：说明"我的能力"基于哪个会话/目录 */
-.scopebar{
-  display:flex;align-items:center;flex-wrap:wrap;gap:10px;
-  padding:9px 26px;font-size:12px;color:var(--txt-2);
-  background:rgba(47,123,255,.07);
-  border-bottom:1px solid var(--line);
-  flex:0 0 auto;
-}
-.scopebar b{color:var(--txt);font-weight:600}
-.scope-item{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
-.scope-sep{width:1px;height:13px;background:var(--line-2);flex:0 0 auto}
+/* 原「作用域上下文条」的样式已删除（2026-09-24）：那条 bar 的内容压进了各页页头，
+   只剩 .scope-chip 一族（见下方 .page-title 之后）。#scopebar 容器保留在 index.html 里
+   但恒为 display:none，由 renderScopeBar 保证。 */
 .content{flex:1;overflow:auto;padding:22px 26px 60px;min-width:0}
+
+/* ===== 知识库插件宿主的舞台（.kb-stage）=====
+   插件界面有两类，装法必须分开（2026-09-24 实测后定）：
+   · 知识库页(#/knowledge)：插件面板根 .kb-panel-in 自带**内联** position:fixed;inset:0
+     —— 那是原生 DSH 的浮层语义（面板盖满整个视口，连控制台侧栏、顶栏一起盖住，
+     用户进了这页就被锁死，✕ 是唯一出口）。控制台里知识库是一个**页面**，
+     浮层语义不成立：下面这条规则把面板根中和成 position:absolute;inset:0，
+     以本舞台（position:relative）为包含块 —— 面板精确填满内容区，
+     侧栏/顶栏恢复可见可点，✕ 关掉后面板退场、页面其余部分照常可用。
+   · 本地模型页(#/knowledge/models)：插件注册的是 settings.section **内嵌块**，
+     高度随内容长（实测 1341px > 视口）。这时舞台必须**随内容长高**、且不能裁剪，
+     滚动交给 .content（它本来就有 overflow:auto）。
+   ⚠️ 两边共用 #kbhost 这一个 id，所以差异全部落在 .kb-stage 的修饰类上，别写到宿主身上。 */
+.kb-stage{
+  position:relative;
+  /* CSS 这里只给一个**合理的初值**，真正的值由 app.js 的 fitKbStage() 按实测写入：
+     舞台上方还有页头（标题/面包屑/帮助/提示条），高度该是
+     "内容区可见高度 - 舞台顶到内容区顶的实际距离"，用常量估必错。 */
+  height:calc(100vh - 260px);
+  min-height:420px;
+  overflow:hidden;
+}
+.kb-stage.docs{height:auto;min-height:0;overflow:visible}   /* 随内容长高，不裁剪、不自己滚 */
+.kb-mount{width:100%;height:100%}
+.kb-stage.docs .kb-mount{height:auto}
+
+/* 面板根的定位中和：插件写的是内联样式，必须 !important 才压得住。
+   只改定位不改其它 —— 背景/配色/内部布局都是插件自己的，动了才叫重写。
+   面板内部的右键菜单、弹窗仍是 position:fixed（按鼠标坐标/视口定位），
+   fixed 不受祖先 overflow 裁剪，行为保持原样。 */
+.kb-panel-in{
+  position:absolute !important;
+  inset:0;
+}
+
+/* 隐藏插件面板右上角自带的 ✕（2026-09-24）。
+   它是原生 DSH 的**浮层退出**语义：插件从侧栏按钮调出面板、✕ 把它关掉。
+   控制台里知识库是一个**页面**——退出页面靠左栏导航，不需要面板内再给一个 ✕；
+   留着反而像"这是个弹窗"，且点它会清空面板（需再点一次侧栏才能重开）。
+   ⚠️ 只隐藏这一个按钮，面板内部其它按钮不动；插件文件本身不改。
+   实测该按钮在面板里的祖先链是 button → span → div → .kb-panel-in（**三层**），
+   所以用后代选择器 + 双重属性限定（title 与 aria-label 都是「关闭」），
+   既保证命中、又不会误伤面板里别的按钮。 */
+.kb-panel-in button[title="关闭"][aria-label="关闭"]{
+  display:none !important;
+}
+
+/* ===== 修正插件的「复选行」在宿主里被压成 0 宽 =====
+   插件里「全部」下拉的每一项写成：
+     <label style="display:flex;align-items:center;gap:8px">
+       <input type="checkbox">
+       <span style="flex:1 1 0%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">库名</span>
+     </label>
+   复选框是 <input> 没给宽度 → 它的 flex-basis 解析成 auto 但主尺寸不可用，
+   在宿主环境里被当成 0 参与分配：span 拿 flex-basis:0% 又抢不到剩余空间，
+   最终算出 **0px 宽**（实测 span box = 0,21），文字被 overflow:hidden 整个裁掉——
+   于是"下拉后字看不到"，但颜色其实是对的（label-primary），所以看着像全空。
+   给复选框一个确定的 flex-basis，剩余空间才会落到 span 上。
+   ⚠️ 只动宿主的 CSS，不改插件 dist。 */
+.kb-panel-in label > input[type="checkbox"],
+.kb-panel-in label > input[type="radio"]{
+  flex:0 0 auto;
+  width:14px;height:14px;
+  margin:0;
+  accent-color:var(--brand);
+}
+.kb-panel-in label > span[style*="text-overflow"]{
+  min-width:0;   /* flex 子项默认 min-width:auto 会因 nowrap 文本撑住，配合 ellipsis 需要归零 */
+}
 
 /* ===== 模态框（替代浏览器 prompt）===== */
 .modal-mask{
@@ -196,6 +257,25 @@ th.sortable.desc::after{content:'↓';opacity:1;color:var(--brand-2)}
 .page-title{display:flex;align-items:baseline;gap:12px;row-gap:8px;margin-bottom:4px;flex-wrap:wrap}
 .page-title h2{font-size:20px;font-weight:700;flex:0 0 auto}
 .page-title .sub{color:var(--txt-3);font-size:12px;flex:0 1 auto;min-width:0}
+
+/* 会话上下文 chip：原先是一条 43px 的独立「作用域条」，2026-09-24 把它压进页头。
+   只保留「当前会话」（预设 / 工作目录 / 状态在别的页都有，见 app.js renderScopeBar 的注释），
+   靠右排在 .pt-actions 前面 —— 两者都 margin-left:auto，所以先出现的 chip 占左侧的空位。 */
+.scope-chip-wrap{margin-left:auto;flex:0 0 auto;display:inline-flex;align-items:center}
+/* chip 之后的按钮组不再需要自己撑开，否则两者之间会多出一段空白 */
+.scope-chip-wrap + .pt-actions{margin-left:0}
+.scope-chip{
+  display:inline-flex;align-items:center;gap:6px;
+  font-size:12px;color:var(--txt-2);
+  background:rgba(47,123,255,.10);
+  border:1px solid var(--line);border-radius:999px;
+  padding:3px 11px;max-width:380px;
+}
+.scope-chip b{color:var(--txt);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.scope-chip-sub{
+  font-size:10.5px;color:var(--warn,#d97706);
+  border:1px solid currentColor;border-radius:999px;padding:0 6px;
+}
 .crumb{color:var(--txt-3);font-size:12px;margin-bottom:16px}
 
 /* 标题行右侧动作区（平台开关 / 按钮组）：整块靠右且不参与压缩 */
@@ -695,9 +775,7 @@ td,th{overflow-wrap:anywhere}
 /* @ 引用的路径胶囊：单条超长时不要横向溢出 */
 .chip{max-width:100%;overflow-wrap:anywhere}
 
-/* 作用域条：工作目录可以很长，允许压缩而不是把整条顶出去 */
-.scope-item{min-width:0;max-width:100%}
-.scope-item b{overflow-wrap:anywhere}
+/* （原「作用域条」的 .scope-item 压缩规则已随该 bar 一并删除） */
 
 /* 斜杠命令 / @ 引用弹层：菜单项名字就是文件路径，可能很长。
    所以用可压缩 + 单行省略：短名字照样完整显示，长路径截断且悬浮可见全文（title 由页面给）。 */
@@ -745,7 +823,8 @@ td,th{overflow-wrap:anywhere}
   .sidetoggle{display:block}
   .side{position:absolute;z-index:30;height:calc(100% - 56px);top:56px;left:0}
   .content{padding:16px 14px 48px}
-  .scopebar{padding:8px 14px}
+  /* 会话 chip 在窄屏上收窄，宁可省略标题也别把按钮组挤到第二行 */
+  .scope-chip{max-width:180px;padding:2px 8px}
   .nav{margin-left:6px}
   .nav a{padding:6px 10px;font-size:12px}
   .brand-org,.brand-sep{display:none}

@@ -1226,6 +1226,9 @@ const ROUTES = [
   // ── 能力与资产：给智能体扩展能力的全局资产清单。
   //    大模型/智能体预设/MCP/插件是全局资产；Skills 按 cwd 分层加载（作用域标签页内已写明）──
   { id:'models',   path:'/model',           ico:'🧠', label:'大模型',         group:'能力与资产' },
+  // 知识库：内容与配置都归**插件自己的后端**（dsh-knowledge 的 /knowledge 路由），
+  // 控制台只提供通道与外壳 —— 所以这一页与「大模型」是两件事：那是对话用模型，这是检索用知识库。
+  { id:'knowledge',path:'/knowledge',       ico:'📚', label:'知识库',         group:'能力与资产' },
   // 智能体预设是全局资产（列表/复制/删除都是全局的），只有"选择"作用到会话
   { id:'agentMgr', path:'/agent/manage',    ico:'🎛️', label:'智能体预设',     group:'能力与资产' },
   { id:'skillMgr', path:'/skills/manager',  ico:'🧩', label:'Skills 管理',    group:'能力与资产' },
@@ -1237,6 +1240,12 @@ const ROUTES = [
   // 设置页是全局配置文件（~/.dsh/settings.yaml）：实测 settings/describe 传 sessionId
   // 会被 typert 拒绝（unexpected sessionId），14 个命名空间全部全局生效
   { id:'settings', path:'/settings',        ico:'⚙️', label:'设置',           group:'平台设置' },
+  // ⚠️ 「本地模型（用于知识库）」**不出现在侧栏**（2026-09-24 定）：它只服务于知识库，
+  //   列在「平台设置」组里会让人误以为是与对话模型并列的一类设置，还多占一个侧栏位。
+  //   ⚠️ 但它**必须留在 ROUTES 里**：routeOf() 找不到就回退 ROUTES[0]（首页），
+  //   删掉会让知识库页右上角的「🧩 本地模型」按钮一点就跳首页。
+  //   正确做法是路由在表内、导航渲染时按 hidden 过滤（renderNav 与侧栏分组各一处）。
+  { id:'kbModels', path:'/knowledge/models',ico:'🧩', label:'本地模型（用于知识库）', group:'平台设置', hidden:true },
   // ── 系统运行：后台任务处理 + 只读运行时监控 ──────────
   { id:'jobs',     path:'/jobs',            ico:'📊', label:'后台作业',       group:'系统运行' },
   { id:'host',     path:'/system/host',     ico:'🖥️', label:'系统状态',       group:'系统运行' },
@@ -1252,7 +1261,7 @@ const NAV_GROUP = '工作台';
 const GROUP_HINT = {
   '工作台': '每天第一眼',
   '对话与会话': '会话/工作空间=管理页（全局）；子代理/轨迹/工作流/交付物/目标=当前会话视图',
-  '能力与资产': '给智能体扩能力的全局资产：模型目录 / 智能体预设 / Skills（随工作目录加载）/ MCP / 插件',
+  '能力与资产': '给智能体扩能力的全局资产：模型目录 / 智能体预设 / Skills（随工作目录加载）/ MCP / 插件 / 知识库',
   '平台设置': '本机配置：凭据与全局配置文件（~/.dsh/settings.yaml）',
   '系统运行': '后台任务处理与只读运行时监控',
 };
@@ -1304,11 +1313,14 @@ function restoreSide() {
 let _navCache = { nav: '', side: '' };   // 上次渲染的侧栏 HTML：内容没变就不碰 DOM（双渲染/事件重绘都走这里）
 function renderNav(){
   const cur = routeOf(currentPath());
-  const nav = ROUTES.filter(r => r.group === NAV_GROUP).map(r =>
+  // 导航渲染统一排除 hidden 路由（它们只作为页面/detail 入口存在，不进侧栏与顶栏）；
+  // 分组名也从可见项里取，避免某组删空后只剩一个光杆标题。
+  const visible = ROUTES.filter(r => !r.hidden);
+  const nav = visible.filter(r => r.group === NAV_GROUP).map(r =>
     `<a href="#${r.path}" class="${r.id===cur.id?'on':''}">${r.label}</a>`).join('');
-  const groups = [...new Set(ROUTES.map(r => r.group))];
+  const groups = [...new Set(visible.map(r => r.group))];
   const side = groups.map(g =>
-    `<h4 title="${GROUP_HINT[g] || ''}">${g}</h4>` + ROUTES.filter(r => r.group === g).map(r =>
+    `<h4 title="${GROUP_HINT[g] || ''}">${g}</h4>` + visible.filter(r => r.group === g).map(r =>
       `<a href="#${r.path}" class="${r.id===cur.id?'on':''}"><span class="ico">${r.ico}</span>${r.label}</a>`).join('')
   ).join('');
   if (nav !== _navCache.nav) { document.getElementById('nav').innerHTML = nav; _navCache.nav = nav; }
@@ -2522,9 +2534,11 @@ const PAGE_HELP = {
       '当前会话所在的空间会高亮（左缘蓝条 + 描边），同空间的其他会话列在卡内。',
       '文件树点目录展开、点文件名预览；文本按行窗口读取，二进制自动退回"只给元信息"。',
       '预览里的「打开」用宿主默认程序打开真实文件（需部署允许打开路径，见系统状态页）。',
+      '当前会话不属于任何空间时（新建的、或从已删除空间释放出来的），去下方「未分组」里找它。',
     ],
     go: ['sessions', 'deliverables', 'chat'],
-    tip: '会话与空间是**一对多**：一个会话同一时刻最多属于一个空间（<code>insertSessionBefore</code> 是"移动"不是"共享"）；归档后则不属于任何空间。',
+    tip: '**工作空间 ≠ 工作目录**：空间是会话的<b>分组容器</b>（可排序、可归档）；工作目录（cwd）是会话的<b>文件系统路径</b>，决定项目级能力的作用域。'
+      + '会话与空间是**一对多**：一个会话同一时刻最多属于一个空间（<code>insertSessionBefore</code> 是"移动"不是"共享"）；归档后则不属于任何空间。',
   },
   subagents: {
     what: '当前父会话派生的子代理清单与操作：查看历史、继续对话、插话、打断。子代理由模型在回合内自行派发，不是页面上的一个开关。',
@@ -2555,6 +2569,7 @@ const PAGE_HELP = {
     use: [
       '看上区统计判断"这次编排跑了没有"；下区按运行展开阶段与成员。',
       '成员带子代理 ID 的，去子代理页看它的历史与继续对话。',
+      '状态怎么判：报错收场记「失败」；没收到结束事件、但所属轮次已结束的记「已中断」（不是还在跑）。',
     ],
     go: ['subagents', 'sessions', 'trajectory'],
     tip: '本页是**只读**视图；没有运行记录说明该会话还没用 workflow 工具做过多代理扇出。',
@@ -2591,6 +2606,7 @@ const PAGE_HELP = {
       '「当前会话路由」卡是本会话实际生效的模型与推理强度；切换在**时空智能体侧栏**，不在这页。',
       '「📦 可用模型」是部署写在设置里的**静态目录**，决定能选哪些模型。',
       '「🔧 供应商接入」列全部候选通道，并在**同一行**做模型探测：点「探测」拉该通道的最新清单，结果显示在该行下面。',
+      '改供应商（API Key / 参数）、切模型都不在本页 —— 下方「作用域与入口速查」表列出每件事各自该去哪。',
     ],
     go: ['settings', 'credentials', 'host'],
     tip: '「模型发现」= 向通道**实时拉取**它能提供哪些模型（<code>llm/discoverModels</code>，只读）。'
@@ -2605,6 +2621,7 @@ const PAGE_HELP = {
       '「查看配置」读该智能体预设的完整定义，结果落在本页下方的面板里。',
       '「复制」生成可编辑的用户智能体预设副本；「删除」只对用户智能体预设开放。',
       '某个会话**用哪个智能体预设**是会话级属性，在时空智能体侧栏的智能体预设框里切 —— 本页只管清单。',
+      '新会话的默认智能体预设不在本页，见「设置」页的 <code>agent-presets</code> 命名空间。',
     ],
     go: ['chat', 'settings', 'models'],
     tip: '系统智能体预设（<code>trust:\'system\'</code>）随部署发布、只读：不能改名 / 删除 / 在编辑器中打开，要定制请先「复制」。',
@@ -2624,7 +2641,9 @@ const PAGE_HELP = {
     what: 'MCP（Model Context Protocol）服务清单：配置了哪些服务、能否连上、实际注入了多少工具。',
     src: '本机 <code>/api/local/mcp</code>（配置解析 + TCP 探测 + 握手统计）+ 插件运行时 <code>pluginInventory/list</code>',
     use: [
+      '每个 MCP 服务对应一个插件实例；服务清单来自本机配置解析 + TCP 探测。',
       '逐项看：服务名、命名空间、传输方式、地址或启动命令、工具数及其来源。',
+      '「工具数」优先取真实握手结果，其次取 <code>mcp-tools.json</code> 快照。',
       '「查看清单」列出该服务注入的工具全名（<code>mcp__&lt;服务名&gt;__&lt;工具名&gt;</code>）。',
       '「🔄 重新握手」重做一次 TCP 探测 + 握手，成功后自动回写 <code>mcp-tools.json</code> 快照。',
     ],
@@ -2639,13 +2658,38 @@ const PAGE_HELP = {
       '「🔄 重新探测」重跑一次 dump-config，成功即回写快照。',
       '下区是运行时清单（fiber 状态），用来区分"配了"与"真的在跑"。',
     ],
-    go: ['mcp', 'settings', 'host'],
+    go: ['mcp', 'settings', 'knowledge'],
     tip: '想知道"某个插件到底有没有在跑"看下区的运行时清单；想知道"它是怎么被装配进来的"看表格里的层与来源。',
+  },
+  knowledge: {
+    what: '知识库：一个由**知识库插件**提供的本地知识库（知识库组 / 文档 / 切片 / 检索）。',
+    src: '<code>DSH 主机</code>上插件自己注册的 <code>/knowledge</code> 路由（控制台经 <code>/api/kb/*</code> 等价转发）；界面用插件自带的浏览器端代码',
+    use: [
+      '界面上的一切操作（建库 / 导入 / 检索）都由插件完成，控制台不做二次加工，也不存知识库数据。',
+      '「🔄 重新探测」：重探服务是否在位，并重新装载界面。',
+      '配套的模型配置在「🧩 本地模型」页 —— 点本页右上角那个按钮进（侧栏不再单列该项）。',
+    ],
+    go: ['kbModels', 'models', 'plugins'],
+    tip: '这页与「大模型」不是一回事：那是<b>对话</b>用哪个模型，这里是<b>检索</b>用什么知识库。'
+      + '插件没装时这一页显示"未接入"而不是空白：知识库是可选能力，控制台其余功能不受影响。',
+  },
+  kbModels: {
+    what: '知识库专用的本地模型：嵌入（算向量）/ 重排（给检索结果排序）/ 视觉描述 / OCR，都在本机下载与缓存。',
+    src: '同「知识库」：<code>/knowledge/local-models</code>、<code>/knowledge/local-ocr</code>、<code>/knowledge/local-ollama/*</code> 等，经 <code>/api/kb/*</code> 转发',
+    use: [
+      '在这里下载 / 自检 / 删除模型；换嵌入模型后旧库需要重建（维度会变）。',
+      'Ollama 那组是给"没有现成嵌入模型"的场景兜底的本机服务。',
+      '模型缓存在本机（默认在 DSH 的 cache 目录下），可在知识库插件的配置里换盘。',
+    ],
+    go: ['knowledge', 'models', 'settings'],
+    tip: '这些模型<b>只影响知识库</b>的入库与检索质量，不会改变对话里用哪个模型。'
+      + '体积都不小，下载前先看清缓存位置所在磁盘的剩余空间。',
   },
   credentials: {
     what: '凭据（API Key 等）的**键名**管理：写入、更新、删除，以及"哪个供应商缺 Key 会导致不参与路由"。',
     src: '<code>credentials/describe</code>（按名逐个确认状态）+ 本机 <code>/api/local/credentials</code>（只解析键名，不读值）+ 设置里的 <code>*Env</code> / <code>*Ref</code> 引用',
     use: [
+      'DSH 只能**按名查询**凭据状态（没有"列出全部"的接口），所以键名由本机文件与设置引用凑出，状态全部以 DSH 返回为准。',
       '分区看：已配置 / 被引用但缺 Key（会影响路由，优先处理）/ 本机孤立键名 / 非用户凭据记录 / 供应商对照表。',
       '「写入 / 更新」按名提交新值；「删除」只对可写凭据开放。',
       '「按名查询」对任意键名核对一次状态，不必先配好再来。',
@@ -2662,7 +2706,9 @@ const PAGE_HELP = {
       '高级区可查看原始 schema、整段替换、按路径 ops 修改。',
     ],
     go: ['credentials', 'models', 'agentMgr'],
-    tip: '三类命名空间的作用面不同：新会话出厂默认值（**不影响已有会话**）、执行环境参数（影响所有会话）、界面偏好（只影响本控制台）。',
+    tip: '三类命名空间的作用面不同：<b>新会话出厂默认值</b>（agent-default-model / agent-presets / permission，<b>已有会话完全不受影响</b>，要改当前会话请用时空智能体侧栏）、'
+      + '<b>执行环境参数</b>（llm-* / web-search-* / shell / agent-loop / subagent-model-selection，立即影响所有会话）、'
+      + '<b>界面偏好</b>（ui-* / locale，只影响本控制台显示）。改动都是 <code>applies=live</code>，立即生效。',
   },
   jobs: {
     what: '四类"异步进行中"的事：后台作业、工具审批、智能体提问、消息队列。',
@@ -2689,7 +2735,7 @@ const PAGE_HELP = {
 };
 
 /* 说明卡折叠状态：记忆在本地，**默认全部收起**。
-   18 个模块都默认铺开会把每页首屏挤满；收起时标题行仍显示本页一句话摘要（见 pageHelp），
+   所有页面都默认铺开会把每页首屏挤满；收起时标题行仍显示本页一句话摘要（见 pageHelp），
    信息不至于丢，点一下就能展开全文。 */
 const HELP_LS_KEY = 'dshHelpCollapsed';
 let _helpCollapsed = null;
@@ -2793,7 +2839,7 @@ function uiPrefsCard() {
     + '<code>dsh-console/ui-prefs.yaml</code> 里，不写 <code>~/.dsh/settings.yaml</code>，也不影响任何会话的模型与工具行为。'
     + (stateFileHint() || '') + '</div>'
     + uiPrefRow('helpVisible', true, '显示各页「本页说明」',
-      '18 个模块顶部那张说明卡（这页做什么 / 数据从哪来 / 怎么用）。关掉后整页首屏更干净，说明内容仍在 <code>app.js</code> 的 <code>PAGE_HELP</code> 里。',
+      '每个页面顶部那张说明卡（这页做什么 / 数据从哪来 / 怎么用）。关掉后整页首屏更干净，说明内容仍在 <code>app.js</code> 的 <code>PAGE_HELP</code> 里。',
       '显示中', '已隐藏')
     + '<div class="muted" style="font-size:11px;margin-top:8px">'
     + '当前状态：说明卡' + (shown ? '正在显示' : '<b>已隐藏</b>')
@@ -2807,7 +2853,7 @@ function stateFileHint() {
 /** 本页说明卡：这页做什么 / 数据从哪来 / 怎么用 / 相关页去哪。
  *  内容全部来自 PAGE_HELP（允许内联 <code> 等标签，是本文件里的静态文案，不含用户数据）。 */
 function pageHelp(id) {
-  // 设置页里的「显示本页说明」关掉之后，18 个模块的说明卡一起消失（默认显示）
+  // 设置页里的「显示本页说明」关掉之后，全部页面的说明卡一起消失（默认显示）
   if (!uiPref('helpVisible', true)) return '';
   const h = PAGE_HELP[id];
   if (!h) return '';
@@ -3104,6 +3150,41 @@ const PAGE_CHECKS = {
       }, want: p => (p.plugins || []).length + ' 个插件 · ' + Object.keys(p.layers || {}).length + ' 层 · 执行方式 ' + (p.via || '—') },
     { name: '插件运行时 pluginInventory/list', fn: () => API.call('pluginInventory/list', { args: {} }),
       want: v => (v.entries || []).length + ' 条（活动 ' + (v.entries || []).filter(e => e.fiberPhase === 'active').length + '）' },
+  ],
+  knowledge: [
+    { name: '知识库服务在位（/knowledge/config）', fn: async () => {
+        const r = await fetch('/api/kb-status?t=' + Date.now(), { cache: 'no-store' }).then(x => x.json());
+        if (!r.available) throw new Error('DSH 主机上没有知识库服务：插件未加载，或加载后没重启 dsh web');
+        return r;
+      }, want: r => '目标 ' + r.origin + ' · 路由 ' + r.route },
+    { name: '知识库配置可读 /knowledge/config', fn: () => kbFetch('GET', '/config'),
+      want: v => '嵌入通道 ' + (v.embeddingProvider || '未配置')
+        + ' · 模型 ' + (v.embeddingModel || '—') + ' · 切片 ' + (v.chunkSize ?? '—') + '/' + (v.chunkOverlap ?? '—') + ' · topK ' + (v.topK ?? '—') },
+    { name: '知识库组清单 /knowledge/bases', fn: () => kbFetch('GET', '/bases'),
+      want: v => (Array.isArray(v) ? v.length : (v.items || []).length) + ' 个知识库组' },
+    { name: '插件界面文件可取（/api/kb-client.js）', fn: async () => {
+        const r = await fetch('/api/kb-client.js', { method: 'HEAD', cache: 'no-store' });
+        if (!r.ok) throw new Error('取不到插件的浏览器端文件（HTTP ' + r.status + '）—— 控制台找不到该插件在本机的安装位置');
+        return true;
+      }, want: () => '已取到插件界面代码（点开本页即装载）' },
+    { name: 'React 运行时可用（/api/kb-react）', fn: async () => {
+        const r = await fetch('/api/kb-react', { cache: 'no-store' }).then(x => x.json());
+        if (!r.ok) throw new Error(r.error || 'DSH 前端产物里没有找到 React 运行时');
+        return r;
+      }, want: r => r.url + ' · ' + Math.round((r.size || 0) / 1024) + ' KB', opt: true },
+  ],
+  kbModels: [
+    { name: '知识库服务在位（本地模型页的前提）', fn: async () => {
+        const r = await fetch('/api/kb-status?t=' + Date.now(), { cache: 'no-store' }).then(x => x.json());
+        if (!r.available) throw new Error('DSH 主机上没有知识库服务：这些模型是给知识库用的，服务不在位时本页无处配置');
+        return r;
+      }, want: r => '目标 ' + r.origin },
+    { name: '本机模型清单 /knowledge/local-models', fn: () => kbFetch('GET', '/local-models'),
+      want: v => (Array.isArray(v) ? v.length : (v.items || []).length) + ' 个本地模型条目（0 个属正常：还没下载）' },
+    { name: 'OCR 运行时状态 /knowledge/local-ocr', fn: () => kbFetch('GET', '/local-ocr'),
+      want: v => (v && (v.installed ?? v.present)) ? '已就绪' : '未安装（可选：扫描件识别才需要）', opt: true },
+    { name: '模型建议 /knowledge/model-suggestions', fn: () => kbFetch('GET', '/model-suggestions'),
+      want: v => (Array.isArray(v) ? v.length : (v.items || []).length) + ' 条建议', opt: true },
   ],
   credentials: [
     { name: '本机凭据文件键名（只读键名）', fn: () => API.localCredentials(),
@@ -3742,9 +3823,6 @@ Pages.agentMgr = () => `
       </div>
   ${crumbOf('agentMgr')}
   ${pageHelp('agentMgr')}
-  
-  <div class="alert info">💡 智能体预设<b>清单</b>全局共享；每个会话<b>用哪个智能体预设</b>是会话级属性。当前会话使用：<b>${fmt.esc(sessionPreset(currentSession()) || '默认智能体预设')}</b>；新会话的默认智能体预设见<a href="#/settings">设置 → agent-presets</a>。<br>
-  <b>系统智能体预设</b>（来源 <code>system</code>）随部署发布、<b>只读</b>：不能改名/删除，也不能在编辑器中打开；要定制先「复制」成用户智能体预设，再编辑副本。</div>
 
   ${State.presets.length ? `<div class="row c2">${State.presets.map(p => `
     <div class="card">
@@ -3827,6 +3905,99 @@ Pages.skillMgr = () => {
       <p>${fmt.esc(s.description || '—')}</p>
       <div class="muted mt mono" style="font-size:10.5px">${fmt.esc(s.file)} · ${s.bytes} 字节</div>
     </div>`).join('')}</div>` : '<div class="empty">当前工作空间下没有技能</div>' + emptyGuide('skillMgr')}`;
+};
+
+/* ============ 知识库页（能力与资产）============
+   这页本身很薄：真正的界面是插件自带的，控制台只负责三件事 ——
+   ① 说明这页的数据从哪来、为什么它和「大模型」不是一回事；
+   ② 给出「未接入」时的确切处置办法（而不是一个空白页）；
+   ③ 提供装载它的容器。
+
+   宿主高度与定位上有个坑（2026-09-24 实测修正）：
+   插件面板根 .kb-panel-in 自带内联 position:fixed;inset:0 —— 原生 DSH 的浮层语义，
+   直接用会盖满整个视口、连控制台侧栏与顶栏一起锁死（✕ 成了唯一出口）。
+   style.css 里已把面板根中和成 absolute（以 .kb-stage 为包含块），本页舞台
+   用 fitKbStage() 按"舞台顶→内容区底"的实测距离定高 —— 舞台上方还有
+   页头/帮助/提示条，拿 clientHeight 直接当高度必 overshoot。 */
+Pages.knowledge = () => {
+  const st = KB.status;
+  const known = st !== null;
+  const ok = known && st.available;
+  const body = !known
+    ? '<div class="card"><div class="empty"><span class="loading"></span> 正在检查知识库服务…</div></div>'
+    : ok
+      ? '<div class="kb-stage"><div id="kbhost" class="kb-mount"></div></div>'
+      : kbNotWiredCard(st);
+
+  return `
+  <div class="page-title"><h2>知识库</h2>
+    <span class="sub">知识库插件自带后端的原生界面 · 数据与配置都在它自己的存储里${scopeTag('global')}</span>
+    <span class="pt-actions">
+      <button class="btn sm" onclick="refreshKnowledge()" title="重新探测知识库服务，并重新装载界面">🔄 重新探测</button>
+      <button class="btn sm" onclick="location.hash='#/knowledge/models'" title="进入「本地模型（用于知识库）」">🧩 本地模型</button>
+    </span>
+  </div>
+  ${crumbOf('knowledge')}
+  ${pageHelp('knowledge')}
+  ${stampText('knowledge')}
+
+  ${body}`;
+};
+
+/** 未接入时的引导卡：写清三种可能，每条都给可照做的下一步，不冒充故障 */
+function kbNotWiredCard(st) {
+  const reason = st && st.reason ? '<br><span class="muted" style="font-size:11.5px">探测器返回：' + fmt.esc(st.reason) + '</span>' : '';
+  return '<div class="card">'
+    + '<h3>知识库未接入</h3>'
+    + '<p class="muted" style="margin:8px 0 12px">控制台在本机的 DSH 主机上没有找到知识库服务。'
+    + '知识库是<b>可选能力</b>：没装它，控制台其余功能完全正常，这一页只是显示"没有"。' + reason + '</p>'
+    + '<ol style="padding-left:20px;line-height:2">'
+    + '<li><b>插件没装</b>：在该 profile 里加载知识库插件，装完<b>重启 <code>dsh web</code></b>'
+    + '<span class="muted">（该 profile 的 HMR 已关闭，不重启不生效）</span>。</li>'
+    + '<li><b>装了但没重启</b>：DSH 启动时才会注册它的路由，重启一次即可。</li>'
+    + '<li><b>装在别的 profile</b>：控制台读的是 <code>DSH_PROFILE</code>（默认 <code>web</code>）；'
+    + '用环境变量指到正确的 profile 再重启控制台。</li>'
+    + '</ol>'
+    + '<p class="muted" style="font-size:12px;margin-top:10px">'
+    + '接入后本页会直接呈现插件自带的界面，控制台不重写它，也不存知识库数据。</p>'
+    + '<div style="margin-top:12px"><button class="btn sm" onclick="refreshKnowledge()">重新探测</button>'
+    + ' <a class="btn sm" href="#/plugin/manager">去看插件清单 →</a></div>'
+    + '</div>';
+}
+
+/* ============ 本地模型（用于知识库）（平台设置）============
+   与「知识库」同一套后端，只是换成插件里的设置分区（settings.section / 本地模型）。
+   页名与页内文案都写明"用于知识库"：这些模型（嵌入 / 重排 / 视觉描述 / OCR）
+   只服务于知识库的入库与检索，不会改变对话用的模型 —— 那是「大模型」页的事。
+
+   ⚠️ 本页与「知识库」不同：插件在这里注册的是 **settings.section 内嵌块**（不是整屏 overlay），
+   内容高度由插件决定、比视口高（2026-09-24 实测 1341px vs 视口 907px）。
+   所以宿主**不能写死高度、也不能让父级 overflow:hidden** —— 那会把下面半截直接裁掉，
+   而且因为宿主自己不滚，用户连滚动条都看不到。这里用 .kb-stage.docs 让宿主随内容长高，
+   滚动交给外层的内容区（.content 本来就是 overflow:auto）。 */
+Pages.kbModels = () => {
+  const st = KB.status;
+  const known = st !== null;
+  const ok = known && st.available;
+  const body = !known
+    ? '<div class="card"><div class="empty"><span class="loading"></span> 正在检查知识库服务…</div></div>'
+    : ok
+      ? '<div class="kb-stage docs"><div id="kbhost" class="kb-mount"></div></div>'
+      : kbNotWiredCard(st);
+
+  return `
+  <div class="page-title"><h2>本地模型（用于知识库）</h2>
+    <span class="sub">知识库的嵌入 / 重排 / 视觉描述 / OCR 模型 · 都是本机下载与缓存${scopeTag('global')}</span>
+    <span class="pt-actions">
+      <button class="btn sm" onclick="refreshKnowledge()" title="重新探测知识库服务，并重新装载界面">🔄 重新探测</button>
+      <button class="btn sm" onclick="location.hash='#/knowledge'" title="回到知识库本体页面">📚 去知识库</button>
+    </span>
+  </div>
+  ${crumbOf('kbModels')}
+  ${pageHelp('kbModels')}
+  ${stampText('knowledge')}
+
+  ${body}`;
 };
 
 Pages.plugins = () => {
@@ -4020,10 +4191,6 @@ Pages.models = () => {
       </div>
   ${crumbOf('models')}
   ${pageHelp('models')}
-  
-
-  <div class="alert info">💡 本页回答三件事：<b>哪些供应商接进来了</b>、<b>能选哪些模型</b>、<b>当前会话正在用哪个</b>。<br>
-  改供应商（API Key / 参数）不在本页；切模型也不在本页——具体入口见下表。</div>
 
   <div class="card mb">
     <h3>🧭 作用域与入口速查</h3>
@@ -4116,9 +4283,6 @@ Pages.mcp = () => `
   </div>
   ${crumbOf('mcp')}
   ${pageHelp('mcp')}
-  
-  <div class="alert info">每个 MCP 服务一个插件实例，工具注册为 <code>mcp__&lt;serverName&gt;__&lt;工具名&gt;</code>。
-    服务清单来自本机配置解析 + TCP 探测，「工具数」优先取握手结果、其次取 <code>mcp-tools.json</code> 快照。</div>
 
   ${!State.mcp ? '<div class="card"><div class="empty"><span class="loading"></span> 正在读取 MCP 配置…</div></div>' : ''}
   ${State.mcp && !State.mcp.length ? '<div class="card"><div class="empty">本部署没有配置任何 MCP 服务</div>' + emptyGuide('mcp') + '</div>' : ''}
@@ -4223,11 +4387,6 @@ Pages.credentials = () => {
     📄 本机凭据文件${local.error ? '读取失败' : '不存在'}：<code>${fmt.esc(local.file || '~/.dsh/.credentials.yaml')}</code>${local.error ? ' —— ' + fmt.esc(local.error) : ''}。
     ${local.error ? '若控制台后端还是旧版本（没有 <code>/api/local/credentials</code> 这个端点），重启控制台即可读到键名；' : ''}
     此时列表只依据<b>设置里引用的键名</b>，可能漏掉没被任何配置引用的旧键。
-  </div>` : ''}
-
-  ${d ? `<div class="alert info">
-    🔎 <b>这页的数据是怎么来的</b>：DSH 只能<b>按名查询</b>凭据状态（没有"列出全部凭据"的接口），
-    所以页面先凑出候选<b>键名</b>（本机凭据文件 <code>refs:</code> 段 + 设置里 <code>*Env</code> / <code>*Ref</code> 引用的名字；<b>只读键名、不读值</b>），再逐个向 DSH 确认 —— 下面的「已配置 / 未配置」<b>全部以 DSH 返回为准</b>。
   </div>` : ''}
 
   ${d && refMissing.length ? `<div class="card mb">
@@ -4529,11 +4688,6 @@ Pages.settings = () => {
   ${d ? `<div class="alert ${d.writable ? 'info' : 'err'}">
     配置文件 ${d.writable ? '<b>可写</b>' : '<b>只读</b>'} · ${d.hasDocument ? '用户文档已存在' : '尚无用户文档'}
     · 位置 <code>~/.dsh/settings.yaml</code></div>` : ''}
-  ${d ? `<div class="alert info">
-    本页配置的是 <b>DSH 全局设置</b>，分三类，改了立即生效（<code>applies=live</code>）：<br>
-    ① <b>新会话的出厂默认值</b>（agent-default-model / agent-presets / permission）——只决定<b>新</b>会话从什么状态开始，<b>已有会话完全不受影响</b>；要改当前会话请用时空智能体侧栏，不要改这里<br>
-    ② <b>执行环境参数</b>（llm-* / web-search-* / shell / agent-loop / subagent-model-selection）——立即影响<b>所有会话</b>的模型目录、工具与子代理行为<br>
-    ③ <b>界面偏好</b>（ui-* / locale）——只影响本控制台显示</div>` : ''}
 
   ${ns.map(n => {
     const isChanged = !sameJson(n.value, n.base);
@@ -4703,9 +4857,6 @@ Pages.workspace = () => {
     ${stampText('workspaces')}
 
   ${cur && !curWs ? `<div class="alert info">当前会话 <span class="mono">${fmt.esc(String(cur).slice(0, 18))}…</span>${curSess?.origin === 'subagent' ? '是<b>子代理会话</b>，随父会话活动、不挂在工作空间下' : '不属于任何工作空间 —— 见下方<b>「未分组」</b>（新建的、以及从已删除空间里释放出来的会话都在那儿）'}。</div>` : ''}
-  <div class="alert info">
-    <b>工作空间 ≠ 工作目录</b>：空间是会话的<b>分组容器</b>（可排序、可归档）；工作目录（cwd）是会话的<b>文件系统路径</b>，决定项目级能力的作用域。一个空间装多个会话，一个会话同一时刻只属于一个空间。
-  </div>
 
   ${State.sessionId ? `<div class="card mb">
     <h3>📁 工作目录文件 <span class="tag gray">当前会话作用域</span>
@@ -5415,11 +5566,6 @@ Pages.deliverables = () => {
   
   ${stampText('deliverables')}
 
-  <div class="alert info">
-    <b>① 本会话产物</b>：本次会话里模型实际写入或修改过的文件。<br>
-    <b>② 工作目录成果</b>：工作目录里最近落盘的文件，按修改时间倒序。
-  </div>
-
   <div class="card">
     <h3>① 本会话产物 ${produced === null ? '' : '<span class="tag gray">' + produced.length + ' 个</span>'}</h3>
     ${produced === null ? '<div class="empty"><span class="loading"></span> 读取会话事件…</div>'
@@ -5474,10 +5620,6 @@ Pages.workflow = () => {
   ${pageHelp('workflow')}
   
   ${stampText('workflowRuns')}
-
-  <div class="alert info">
-    运行状态怎么判：报错收场记「失败」；没有收到结束事件、但它所属的轮次已经结束，记「已中断」（不是还在跑）。
-  </div>
 
   <div class="row c3">
     <div class="card stat"><div class="k">编排运行</div><div class="v">${runs ? runs.length : '—'}<span class="u">次</span></div>
@@ -5534,7 +5676,466 @@ Pages.workflow = () => {
   </div>`;
 };
 
-/* ============ 系统状态 ============ */
+/* ============ 知识库（dsh-knowledge 插件自带后端的控制台接入）============
+   背景：原生 DSH 装了该插件后，左侧栏多出「知识库」（整屏覆盖面板），设置里多出「本地模型」。
+   这里把**同一套后端**接到控制台导航里，插件代码一行不改。
+
+   ⚠️ 边界（动它之前先读这段）
+   · 后端 = 插件自带的 `/knowledge` 前缀路由（跑在 DSH 主机上）。控制台的 `/api/kb/*` 是它的
+     等价映射，**不重写、不转成 RPC**：入库 / 切片 / 向量检索全在插件里完成。
+   · 前端 = 插件自带的 `lib/client.js`。它是个 UMD 包（首行 `window.__ModuleLoader__.load({…})`），
+     渲染依赖宿主的 React 实例，所以**只能在运行时装载**，构建期抽取复用不成立。
+     本工程依旧零依赖：运行时从 `/api/kb-client.js` 取回该文件，自己喂给它 React 运行时。
+   · 没装插件时：本页显示「未接入」以及怎么接，**不报故障**，控制台其余功能不受任何影响。
+
+   为什么用运行时加载而不是把文件拷进 public/：
+   一份拷贝会随插件升级静默过期，还平白带上别人的 AGPL 代码与许可证义务；
+   运行时取回则永远等于本机装的那一份。 */
+
+const KB = {
+  status: null,        // null 未探 | { available:false, reason } | { available:true, origin, route }
+  models: null,        // 本地模型页数据
+  bootSeq: 0,          // 每次挂载自增 → 模块 id 唯一，重进页面不会撞 "already registered"
+  reactErr: null,      // React 运行时装载失败原因（装载界面时给明确文案）
+};
+window.KB = KB;        // 诊断用：CDP / 控制台里能直接看装载到哪一步、插件注册了哪些槽位
+
+/** 插件是否在位（控制台 → DSH 主机上的 /knowledge 路由） */
+KB.probe = function (force) {
+  if (!force && KB.status !== null) return Promise.resolve(KB.status);
+  return fetch('/api/kb-status', { cache: 'no-store' })
+    .then(r => r.json())
+    .then(j => { KB.status = j; return j; })
+    .catch(e => { KB.status = { available: false, reason: e.message }; return KB.status; });
+};
+
+/* ---------- 请求：统一走 /api/kb/*，应答是插件的 {ok,value} 信封 ----------
+   与 /api/*（DSH 的 RPC 代理）刻意分开铺一层：既不让"所有 /api/* 都是 DSH RPC"这个前提失效，
+   也不依赖 DSH 的 ?token= 会话鉴权语义。信封在这里统一拆开 —— 形状与插件自己的
+   KnowledgeApi 完全一致，所以页面拿到手的直接就是插件的数据结构。 */
+async function kbFetch(method, path, body) {
+  const r = await fetch('/api/kb' + path, {
+    method,
+    ...(body !== undefined ? { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {}),
+  });
+  let env = null;
+  try { env = await r.json(); } catch { /* 交给下面的状态码文案 */ }
+  if (!r.ok || !env || env.ok !== true) {
+    throw Object.assign(
+      new Error(env?.error?.message || ('知识库请求失败（HTTP ' + r.status + '）')),
+      { code: env?.error?.code || 'kb-' + r.status });
+  }
+  return env.value;
+}
+
+/* ---------- 装载插件界面 ----------
+   三个坑（都是踩过的）：
+   ① 插件文件结尾是裸的 `return module.exports; } });` —— 它要求**脚本顶层作用域**，
+      所以只能当内联脚本执行，不能塞进 Function/eval；
+   ② 它的 require 只认 'react' / 'react/jsx-runtime' / 'react-dom'（以及 react-dom/client），
+      而且必须是**同一个 React 实例**，否则 hooks 会报 invalid hook call → 由 kbReactRuntime 提供；
+   ③ 同一个模块 id 只能 load 一次，所以每次挂载都用带序号的唯一 id。 */
+KB.mount = async function (container, entry, props) {
+  // 同一容器上已有在飞的装载就不再重入：重绘可能连续触发多次 kick，
+  // 并发装载会互相覆盖 innerHTML，表现是闪烁 + 偶发"装载失败"。
+  if (container.__kbMounting) return;
+  container.__kbMounting = true;
+  container.innerHTML = '<div class="empty"><span class="loading"></span> 正在装载知识库界面…</div>';
+  try {
+    KB.mountStep = 'react';
+    const react = await kbReactRuntime();              // 先备好 React：插件一执行就要 require 它
+    KB.mountStep = 'client-fetch';
+    const src = await fetch('/api/kb-client.js', { cache: 'no-store' }).then(r => {
+      if (!r.ok) throw new Error('取不到插件界面文件（HTTP ' + r.status + '）');
+      return r.text();
+    });
+    KB.mountStep = 'eval';
+    const mod = await kbEvaluate(src, react);
+    if (typeof mod.apply !== 'function') throw new Error('插件界面模块没有导出 apply()');
+    KB.mountStep = 'apply';
+    mod.apply(kbHost(mod, container, entry, props, react));
+    KB.mountStep = 'done';
+    container.__kbMounted = true;
+    // 面板挂好后再校一次舞台高度：kick 时页面可能还有一次布局变化
+    //（字体就位、提示条渲染完），量早了舞台会差几十像素，面板底部被推出视口。
+    if (entry === 'shell.overlay') requestAnimationFrame(() => fitKbStage(container));
+    return true;
+  } catch (e) {
+    KB.mountStep = 'fail:' + e.message;
+    container.innerHTML = kbFailCard(e.message);
+    return false;
+  } finally {
+    container.__kbMounting = false;
+  }
+};
+
+/** 把插件文件当内联脚本执行 —— 期间**临时改写 fetch**，把它的 `/knowledge/*` 拨到 `/api/kb/*`。
+ *
+ *  为什么必须这么做：插件的 KnowledgeApi 里写死了 `fetch(\`/knowledge${path}\`)`，是**绝对同源路径**。
+ *  在原生 DSH 里它和界面同源，直接就通；但在控制台（另一个端口）里，`/knowledge` 指向控制台自己，
+ *  插件面板上就会满屏 "knowledge request failed (HTTP 404)"。
+ *
+ *  为什么不改插件文件、也不加 Service Worker：
+ *   · 改插件文件 = 改动第三方代码，升级即失效，还得跟着它的版本走；
+ *   · Service Worker 管得宽、要注册与生命周期，为了一个前缀不值当。
+ *  就地包一层 fetch 最贴合"控制台只做接入"的定位：作用域恰好是这次装载期间，
+ *  插件执行完就还原，控制台自身的 fetch 不受影响。
+ *
+ *  ⚠️ 只在插件**同步执行阶段**改写是不够的：面板里的请求都发生在后续的 React 事件/effect 里。
+ *  所以这里选择**常驻**改写（不还原），但只拦这一个前缀，且优先放行控制台自己的 /api/kb/*
+ *  —— 否则会把自己刚拨过去的请求再改一次。装载失败时立刻还原，避免污染控制台。 */
+let kbRealFetch = null;
+function kbFetchPatched() {
+  if (kbRealFetch) return;                       // 已经改过就不重复包
+  kbRealFetch = window.fetch.bind(window);
+  window.fetch = function (input, init) {
+    try {
+      let url = typeof input === 'string' ? input : (input && input.url) || '';
+      if (url.startsWith('/knowledge/') || url === '/knowledge') {
+        const next = '/api/kb' + url.slice('/knowledge'.length);
+        return kbRealFetch(next, init);
+      }
+    } catch { /* 落到原 fetch */ }
+    return kbRealFetch(input, init);
+  };
+}
+function kbFetchRestore() {
+  if (!kbRealFetch) return;
+  window.fetch = kbRealFetch; kbRealFetch = null;
+}
+
+/** 把插件文件当内联脚本执行：它自己会调 window.__ModuleLoader__.load({id, factory})。
+ *  这里临时装一个捕获器，拿到 factory → 用我们自己的 require 物化出 module.exports。 */
+function kbEvaluate(src, react) {
+  kbFetchPatched();                                   // 先拨好 /knowledge → /api/kb
+  return new Promise((resolve, reject) => {
+    const id = '__console_kb_' + (++KB.bootSeq) + '_' + Date.now();
+    const prev = window.__ModuleLoader__;
+    let done = false;
+    window.__ModuleLoader__ = {
+      load(def) {
+        if (done) return; done = true;
+        try {
+          const mod = def.factory(kbRequire(react));
+          mod.__kbModules = mod;                        // 记一份，便于诊断
+          resolve(mod);
+        } catch (e) { reject(e); }
+        finally { window.__ModuleLoader__ = prev; }
+      },
+      resolve: () => ({}),
+    };
+    const s = document.createElement('script');
+    s.textContent = src;                                // 内联执行，保住文件结尾那句裸 return
+    s.dataset.kbModule = id;
+    try { document.head.appendChild(s); } finally { s.remove(); }
+    setTimeout(() => {
+      if (!done) { window.__ModuleLoader__ = prev; reject(new Error('插件界面文件执行完但没注册模块（插件版本与当前 DSH 客户端不匹配？）')); }
+    }, 20000);
+  });
+}
+
+/** 插件 UI 只 require 这四个 —— 全部由控制台提供，插件那边不用改 */
+function kbRequire(react) {
+  return function (name) {
+    if (name === 'react') return react.react;
+    if (name === 'react/jsx-runtime') return react.jsxRuntime;
+    if (name === 'react-dom') return react.dom;              // 插件只用到 createPortal
+    if (name === 'react-dom/client') return { createRoot: react.dom.createRoot };
+    return {};
+  };
+}
+
+/** 宿主环境复刻：插件入口在 apply(ctx) 里只用 get / effect / on 三样，普通对象即可喂饱 */
+function kbHost(mod, container, entry, props, react) {
+  const store = kbPanelStore();
+  const slots = kbSlots(container, entry, props, store, react);
+  // 插件三个槽位的 inject() 里用到的宿主服务（从它的 apply() 读出来的）：
+  //   slots / locale / workspaces
+  // api（KnowledgeApi）是插件模块**自己 new** 的，不用控制台提供。
+  //
+  // ⚠️ workspaces 是**本地模型页真正依赖**的服务（不是"给个空壳即可"）：
+  //   LocalModelsSection 拿它做两件事 —— props.workspaces.pickDirectory()（选缓存目录）
+  //   与 props.workspaces.openPath(dir)（在系统里打开该目录）。
+  //   早先只给了 { list, current }，两个方法都不存在 → 组件把按钮降级成
+  //   "cacheDirPickUnavailable" / 直接 return，页面上就表现为**内容不全、按钮点了没反应**。
+  //   这里转接到控制台已有的能力上（同一套系统对话框 / 同一个宿主打开接口），
+  //   不另造实现：UI.pickDir() 返回绝对路径或 null（用户取消），与插件期望的形状一致。
+  const services = {
+    slots,
+    locale: kbLocale(mod),
+    workspaces: {
+      list: () => State.workspaces || [],
+      // ⚠️ 当前目录取 `currentSession().cwd`（会话自带），回退 `State.host.cwd` —— 与控制台
+      //   别处同一口径（见 createWorkspace 的 start 参数）。早先这里把顶层 State 当成有 cwd
+      //   字段来读，而它**根本没有** → 恒 undefined，插件的目录框总是空的。
+      //   test-api 的「字段是否有归属」审计就是抓这个的（读不存在的字段会静默 undefined）。
+      current: () => currentSession().cwd || State.host?.cwd || null,
+      pickDirectory: () => UI.pickDir({ title: '选择本地模型缓存目录' }),
+      openPath: (p) => API.call('host.openPath', { path: String(p == null ? '' : p) })
+        .then(() => true).catch(() => false),
+    },
+  };
+  return {
+    get: (name) => services[name],
+    effect(fn) { try { return fn(); } catch (e) { console.warn('[console] 知识库 effect 失败：', e); } },
+    on() { return () => {}; },
+  };
+}
+
+/** 极简 slots 实现：插件注册的 UI 入口，由控制台挂到自己的容器里。
+ *  只实现插件真正用到的 inject / register，不引入 Cordis。
+ *
+ *  ⚠️ 插件的真实契约（从它的 apply() 读出来的，别凭感觉猜）：
+ *      slots.register({ name, id, order, label, inject }, Comp)
+ *    —— **组件是第二个参数**，不在 def 里（def.comp 是 undefined）。
+ *      早先按 `def.comp` 取，结果 register 全部"成功"、页面上却什么都不出现。
+ *     inject 是个函数，返回该组件要的 props；照它原样调即可。
+ *
+ *  三个槽位与组件（dsh-knowledge 的 apply）：
+ *      sidebar.footer.action → SidebarKnowledgeAction  { store, t }
+ *      shell.overlay         → KnowledgePanel           { store, api, t }
+ *      settings.section      → LocalModelsSection       { api, t, workspaces }
+ */
+function kbSlots(container, entry, props, store, react) {
+  const regs = new Map();
+  KB.slotCalls = [];
+  return {
+    inject(name, cb) { KB.slotCalls.push('inject:' + name + (name === entry ? '(HIT)' : '')); if (name === entry) cb(); },
+    register(def, Comp) {
+      KB.slotCalls.push('register:' + def.name + '/' + def.id + ' comp=' + typeof Comp);
+      regs.set(def.id, { def, Comp });
+      const { Comp: C, def: D } = regs.get(def.id) || {};
+      if (typeof C !== 'function') return () => {};
+      const injected = typeof D.inject === 'function' ? D.inject() : {};
+      const merged = { ...injected, ...(props || {}) };
+      // ⚠️ 要开的是**插件自己那个 store**（injected.store），不是控制台造的那个：
+      // 面板组件读 props.store，而 props 来自 def.inject() —— 拿 kbHost 里的 store
+      // 去 open() 是开错了对象，组件那边 useSyncExternalStore 仍然拿到 false → 渲染 null。
+      // （kbHost 里的 store 只是兜底，正常走不到。）
+      const openStore = merged.store && typeof merged.store.open === 'function' ? merged.store : store;
+      kbPaintReact(container, C, merged, openStore, react);
+      return () => {};
+    },
+  };
+}
+
+/** 本地化：极简实现，够插件用即可。
+ *
+ *  ⚠️ 契约（从插件 apply 读出来的，别凭感觉猜）：
+ *      locale.register(NS, { zh, en })   ← 插件**自己把词典交给宿主**
+ *      const t = locale.bind(NS)         ← 返回 t，插件组件用它取文案
+ *  所以宿主不需要内置任何词条：register 收下、bind 从收到的词典里查就行。
+ *  早先的实现把 register 做成空函数、bind 只回几个硬编码串，结果整页文案
+ *  都显示成 `kbInvocation` / `kbOn` 这样的**键名**（因为查不到就回退成 key）。
+ *
+ *  查表规则：先当前语言（zh）→ 再 en → 最后原样返回 key（便于看出缺哪条）。 */
+function kbLocale(mod) {
+  const dicts = new Map();                      // NS → { zh, en }
+  // 兜底：万一插件忘了调 register，从模块里捞一份（它把 zh/en 挂在自己的闭包里，
+  // 这里拿不到，所以只做"没有就回 key"的处理，不再猜）。
+  const pick = (ns, key) => {
+    const d = dicts.get(ns);
+    if (!d) return key;
+    const row = d.zh || {};
+    const en = d.en || {};
+    const v = row[key];
+    if (typeof v === 'string') return v;
+    const w = en[key];
+    return typeof w === 'string' ? w : key;
+  };
+  return {
+    register(ns, dict) { if (dict && typeof dict === 'object') dicts.set(ns, dict); },
+    bind(ns) {
+      const t = (key) => pick(ns, key);
+      t.ns = ns;
+      return t;
+    },
+  };
+}
+
+/** 覆盖面板的开关状态（插件用 useSyncExternalStore 订阅它） */
+function kbPanelStore() {
+  let open = false; const subs = new Set();
+  return {
+    getSnapshot: () => open,
+    subscribe(fn) { subs.add(fn); return () => subs.delete(fn); },
+    open() { open = true; subs.forEach(f => f()); },
+    close() { open = false; subs.forEach(f => f()); },
+    toggle() { open = !open; subs.forEach(f => f()); },
+  };
+}
+
+/** 把插件的 React 组件挂到容器里。
+ *  ⚠️ React 18 的 createRoot 对同一容器只能调用一次 —— 控制台的两个页面各有一个独立容器，
+ *  这里按容器记 root（WeakMap），同一个容器重复挂载时先 unmount 再建新的。 */
+const kbRoots = new WeakMap();
+function kbPaintReact(hostEl, Comp, props, store, react) {
+  const prev = kbRoots.get(hostEl);
+  if (prev) { try { prev.unmount(); } catch { /* 忽略 */ } }
+  const root = react.dom.createRoot(hostEl);
+  kbRoots.set(hostEl, root);
+  // 面板组件用 useSyncExternalStore 订阅"是否打开"：这里置为打开态并推一次
+  if (store && typeof store.open === 'function') store.open();
+  // ⚠️ 走真实的 jsx-runtime（jsx），不要用 createElement 凑 —— 组件的 JSX 编译产物
+  // 依赖 jsx/jsxs 的 key/children 处理，用 createElement 顶层挂载在部分组件上会静默渲染不全。
+  root.render(react.jsxRuntime.jsx(Comp, { ...props }));
+}
+
+/* ---------- 内置 React 运行时 ----------
+   插件的界面代码 require('react')，且必须是**同一个实例**（hooks 靠它挂内部状态），
+   所以控制台必须自带一份 React 给插件用。
+
+   这份运行时由 tools/extract-react-runtime.mjs 在**构建期**从 DSH 前端产物里抽出来，
+   落在 public/react/react-runtime.<hash>.js，随控制台一起分发。为什么是"抽"不是"直接用"：
+   DSH 那份产物是**整个前端**，末尾自带启动代码（找 #root 把应用 run 起来）；
+   控制台里 import 它会在控制台页面里再启动一遍 DSH（实测抛 "web app: missing #root"）。
+
+   ⚠️ 两处踩过的坑：
+   ① 导出名是 `react` / `react-dom` / `react-dom/client` / `react/jsx-runtime`，
+      **不能**把 jsx-runtime 拿 createElement 凑出来 —— 插件里的 JSX 会走 jsx/jsxs，
+      形状不对就会渲染出错或 hooks 报错；
+   ② 必须是**同一个实例**：react 与 react-dom 要来自同一次 import（下面一起取）。 */
+let kbReactPromise = null;
+function kbReactRuntime() {
+  if (kbReactPromise) return kbReactPromise;
+  kbReactPromise = (async () => {
+    let href = KB.reactSource;
+    if (!href) {
+      const info = await fetch('/api/kb-react', { cache: 'no-store' }).then(r => r.json()).catch(() => null);
+      if (!info || !info.ok || !info.url) throw new Error(info?.error || '控制台上找不到可用的 React 运行时');
+      href = info.url;
+      KB.reactSource = href;
+    }
+    const m = await import(/* webpackIgnore: true */ href);
+    // 抽出来的运行时是 `_mods = { react, "react-dom", … }` + `export default _mods`，
+    // 所以四个模块挂在 m.default 上（不是命名空间顶层）。两种情况都认，避免以后改导出方式又炸。
+    const b = (m && m.react) ? m : (m && m.default) || {};
+    const react = b.react, dom = b['react-dom'], client = b['react-dom/client'], jsx = b['react/jsx-runtime'];
+    if (!react || !dom || !client || !jsx) {
+      throw new Error('React 运行时的导出形状不对（缺 react / react-dom / react-dom/client / react/jsx-runtime），请重新生成 public/react/');
+    }
+    return {
+      react,
+      dom: { createPortal: dom.createPortal, createRoot: client.createRoot },   // 插件只用到这两个
+      jsxRuntime: jsx,
+    };
+  })().catch(e => { kbReactPromise = null; throw e; });
+  return kbReactPromise;
+}
+
+function kbFailCard(msg) {
+  return '<div class="card"><div class="alert err">知识库界面装载失败：' + fmt.esc(msg) + '</div>'
+    + '<p class="muted" style="font-size:12.5px">插件后端有响应、但浏览器端没装载起来时，多半是插件版本与当前 DSH 客户端不匹配。'
+    + '原生 DSH 里如果能看到知识库面板，那就是控制台的装载环节有问题，把上面这句报错发给管理员即可。</p></div>';
+}
+
+
+/* ---------- 知识库页的加载器 ----------
+   只做一件事：探测服务是否在位（决定渲染引导卡还是装载容器）。
+   **不在这里装载插件界面** —— 界面要挂到 #kbhost 上，而 render() 每次都会整块替换
+   #content（包括 #kbhost），所以装载必须由 render() 在**所有重绘之后再调 KB.kick()**。
+   在这里装的话，装完立刻被下一次重绘扔掉，页面上就是一片空白。
+
+   ⚠️ 为什么必须在**首次探测完成后**才请二次重绘（返回 true）：
+   render() 的顺序是「先 page() 画骨架 → 再跑加载器」。而 Pages.knowledge() 的骨架
+   完全由 KB.status 决定（null → "正在检查知识库服务…" / available → 装载容器 #kbhost /
+   否则 → 引导卡）。未探测时首帧必然画成"正在检查…"，这个骨架里**没有 #kbhost**，
+   KB.kick() 找不到宿主 → 界面永远装不上，用户看到的就是一直停在"正在检查"。
+   所以首次进入按常规加载器那样返回 true：等探测落地后由 render({refreshed:true})
+   再画一遍，这一遍就能拿到 #kbhost。探测只在**第一次**发生（之后 KB.status 有值），
+   因此第 2 次及以后的重绘不会再触发额外的一遍，不存在"反复重画"。
+
+   为什么不会闪：二次重绘时 #kbhost 已经登记在 DOM_OWNED 里，
+   parkOwned/paintDirect 会把**已装载的那棵 React 子树整块搬过去**，
+   KB.kick() 里的 `mountedHost === host` 判据因此成立、不会重挂 —— 界面不重建、不闪。 */
+async function loadKnowledge(redraw) {
+  const first = KB.status === null;
+  if (first) {
+    // 首次：探测结果决定骨架形状（有 #kbhost 还是引导卡），必须等它回来再画第二遍
+    await KB.probe(false);
+    return true;
+  }
+  // 已有状态：只是"顺手再确认一次在不在"，结果由 KB.mount 内部的失败卡/成功渲染表达，
+  // 不需要再整页画一遍（那才会闪）；强制刷新走 refreshKnowledge()。
+  KB.probe(!!redraw);
+  return false;
+}
+
+/** 在页面里找到宿主容器并装载插件界面（容器不存在就什么都不做）。
+ *  #kbhost 已登记进 DOM_OWNED：重绘时会**整棵子树搬过去**（同一个 DOM 节点），
+ *  所以这里的去重判据 `mountedHost === host` 才是可靠的 —— 节点没换就不重挂，
+ *  页面不会闪、组件内部状态也不会丢。只有真正换了页面/换了槽位才重新装载。 */
+KB.kick = function () {
+  const host = document.getElementById('kbhost');
+  if (!host) return;
+  // 舞台高度按**实测**校准（见 fitKbStage）：舞台上方还有页头等块，
+  // 拿内容区 clientHeight 直接当高度会把底部推出视口。
+  fitKbStage(host);
+  // ⚠️ entry 必须是**插件的槽位名**（它 slots.inject 的那个字符串），不是组件名：
+  //   shell.overlay      → KnowledgePanel        （知识库本体，面板根已被中和成 absolute）
+  //   settings.section   → LocalModelsSection    （本地模型，设置分区）
+  // 写错不会报错，只是 inject 永远不命中、页面上一直停在"正在装载…"。
+  const entry = currentPath() === '/knowledge/models' ? 'settings.section' : 'shell.overlay';
+  // ⚠️ 去重判据之外还要看宿主是不是**空的**：插件的 ✕（store.close()）会把整棵
+  // React 树从宿主里卸掉（实测 #kbhost 变成 0 个子节点），而宿主 DOM 节点没换——
+  // 只看 mountedFor/mountedHost 会误判"还挂着"而拒绝重装，页面从此空白。
+  // 有了这个自愈，✕ 关掉后「再点一次侧栏知识库」或「切走再切回」都能重新拉起。
+  const emptied = !host.firstElementChild;
+  if (!emptied && KB.mountedFor === entry && KB.mountedHost === host) return;
+  KB.mountedFor = entry; KB.mountedHost = host;
+  KB.mount(host, entry);
+};
+
+/** 把知识库页的舞台高度校准成"从舞台顶到内容区底"的实际距离。
+ *  只对知识库页生效；本地模型页是文档流（.kb-stage.docs），
+ *  高度随内容长、**不能**写死，写死反而会把内容裁掉。
+ *  舞台上方还有本页自己的页头（标题/面包屑/帮助/提示条），所以不能直接用
+ *  content.clientHeight —— 那是整块内容区的高度，会把舞台撑得比剩余空间高，
+ *  底部被推出视口。量"舞台顶相对内容区顶的偏移"再相减，才是真实可用高度。 */
+function fitKbStage(host) {
+  const stage = host.closest ? host.closest('.kb-stage') : null;
+  if (!stage || stage.classList.contains('docs')) return;
+  const content = document.getElementById('content');
+  if (!content) return;
+  const cRect = content.getBoundingClientRect();
+  const sRect = stage.getBoundingClientRect();
+  const topOffset = sRect.top - cRect.top;   // 与 content.scrollTop 无关（两者一起平移）
+  const h = Math.round(content.clientHeight - topOffset);
+  if (h > 120) stage.style.height = h + 'px';
+}
+
+/** 面板被插件自己的 ✕（store.close()）关掉后，宿主被清空、不会有任何自动重绘，
+ *  而再点当前页的侧栏/顶栏链接又不触发 hashchange —— 「再进就出不来」就是这么来的。
+ *  这里补一条全局委托：在知识库页上**再点一次「📚 知识库」链接**也重新拉起面板；
+ *  切到别的页再切回来则由 KB.kick() 的空宿主自愈兜底。面板开着时重复点击无害
+ *  （kick 的去重判据会直接返回）。 */
+document.addEventListener('click', e => {
+  const t = e.target;
+  const a = t && t.closest ? t.closest('#side a, #nav a') : null;
+  if (!a || a.getAttribute('href') !== location.hash) return;
+  if (currentPath() === '/knowledge') KB.kick();
+});
+// 窗口尺寸变化时舞台高度跟着重算（面板是 absolute 填舞台的，舞台矮了面板就矮）
+window.addEventListener('resize', () => {
+  if (currentPath() !== '/knowledge') return;
+  const h = document.getElementById('kbhost');
+  if (h) fitKbStage(h);
+});
+
+/** 「重新探测」：作废探测结果与已装载状态，重画本页并重新装载。
+ *
+ *  ⚠️ 这里要**显式 render()**，不能只靠 loadKnowledge() 的二次重绘：
+ *  按钮可能出现在"未接入"的引导卡上（那一版骨架里压根没有 #kbhost），
+ *  作废 status 后必须真的重画一遍，才能把装载容器换出来。
+ *  重画后 KB.status 已是新值，Pages.* 骨架直接按新值出图，一次到位、不闪。 */
+async function refreshKnowledge() {
+  KB.status = null; KB.mountedFor = null; KB.mountedHost = null; KB.reactErr = null;
+  try { await KB.probe(true); } catch { /* 探测失败按未接入渲染 */ }
+  render();
+  UI.ok('已重新探测知识库服务');
+}
+
+
 Pages.host = () => {
   const h = State.host || {};
   const sess = currentSession();
@@ -8254,11 +8855,23 @@ const DOM_OWNED = {
   plugins: ['hostinv', 'dynplugins'],
   sessions: ['histpanel'],
   agentMgr: ['presetpanel'],
+  // ⚠️ 知识库两页的插件界面也是"加载器/React 直接写 DOM"，必须登记进来，否则：
+  //   render() 每次整块替换 #content → 挂在 #kbhost 上的 React 树被扔掉 →
+  //   KB.kick() 只能从头重挂 → 页面反复闪「正在装载知识库界面…」（重绘多频繁就闪多频繁）。
+  //   登记之后，parkOwned/paintDirect 会把**已装载的那棵 DOM 子树整体搬过去**，
+  //   连 React 实例一起保留：既不闪，也不丢组件内部状态（输入框内容、展开的分组等）。
+  knowledge: ['kbhost'],
+  kbModels: ['kbhost'],
 };
 const parkedDom = {};
-function parkOwned() {
-  for (const ids of Object.values(DOM_OWNED)) {
-    for (const id of ids) { const n = document.getElementById(id); if (n) parkedDom[id] = n; }
+/** 摘下的区域按**路由 id** 归档：只摘"当前这页自己拥有"的那些。
+ *  ⚠️ 不能把所有路由的 id 一股脑都摘——知识库(knowledge)与本地模型(kbModels)共用 #kbhost，
+ *  若不分页归档，从知识库切到别的页再切回本地模型时，会把**知识库那棵已装载的树**
+ *  贴到本地模型的宿主里（两个槽位的内容串台）。 */
+function parkOwned(routeId) {
+  for (const id of (DOM_OWNED[routeId] || [])) {
+    const n = document.getElementById(id);
+    if (n) parkedDom[id] = { node: n, route: routeId };
   }
 }
 function paintDirect(r) {
@@ -8267,7 +8880,10 @@ function paintDirect(r) {
   if (stale) { Chat.cur = null; Chat.curKey = null; }
   else for (const id of (DOM_OWNED[r.id] || [])) {
     const fresh = document.getElementById(id), kept = parkedDom[id];
-    if (fresh && kept && kept !== fresh && typeof fresh.replaceWith === 'function') fresh.replaceWith(kept);
+    // 只贴回**本路由**摘下的那个：跨路由共用的 id（#kbhost）靠 route 归属判据隔离
+    if (fresh && kept && kept.route === r.id && kept.node !== fresh && typeof fresh.replaceWith === 'function') {
+      fresh.replaceWith(kept.node);
+    }
   }
   // 插件表由 Table 排序/分页，且行是 renderPlugins() 直接写进去的：必须按新状态同步重填
   if (r.id === 'plugins') renderPlugins();
@@ -8347,7 +8963,7 @@ async function render(opts){
   // （否则点一下审批 / 切一下页面，刚写一半的指令就没了）
   const draftEl = document.getElementById('chatinput');
   if (r.id === 'chat' && draftEl && typeof draftEl.value === 'string') State.chatDraft = draftEl.value;
-  parkOwned();                             // 把"加载器直接写 DOM"的区域整块摘下来（见 paintDirect）
+  parkOwned(r.id);                         // 把"加载器直接写 DOM"的区域整块摘下来（见 paintDirect）
   // 计时只包住 innerHTML：这才是"页面重不重"的成本，加载器耗时另有 TTL 与 stampText 体现
   const _t0 = nowMs();
   contentEl.innerHTML = page();
@@ -8373,6 +8989,7 @@ async function render(opts){
   const jobs = [];
   if (!paintOnly) {
   if (r.id === 'plugins') { loadPluginInventory(); loadDynamicPlugins(); }   // 表格行由 paintDirect() 里的 renderPlugins() 填
+  if (r.id === 'knowledge' || r.id === 'kbModels') jobs.push(loadKnowledge());
   if (r.id === 'subagents') jobs.push(loadSubagents());
   if (r.id === 'home' || r.id === 'sessions') jobs.push(refreshSessionsLite());
   if (r.id === 'home') jobs.push(refreshGoal());
@@ -8389,7 +9006,6 @@ async function render(opts){
   if (r.id === 'workflow') jobs.push(loadWorkflowRuns());
   }   // ← paintOnly 时跳过上面整段加载器
   if (jobs.length && !(opts && opts.refreshed)) {
-    // 兜底超时：任何一个加载器卡住也不能让页面停在半渲染状态（面包屑/作用域条都还没铺）
     const done = await Promise.race([
       Promise.all(jobs.map(p => Promise.resolve(p).then(v => v !== false, () => true))),
       new Promise(res => setTimeout(res, 15000)).then(() => null),
@@ -8399,6 +9015,12 @@ async function render(opts){
     // （返回 !==false）才有必要再画一遍；命中 TTL 缓存的切页直接跳过，省一次全量 innerHTML。
     if (done === null || done.some(Boolean)) return render({ refreshed: true });
   }
+  // ⚠️ 插件界面的宿主重新装载，必须放在**所有重绘之后**。
+  // 原因：本函数每次都会 contentEl.innerHTML = … 整块替换 #content，
+  // React 挂在 #kbhost 上的那棵树会随旧 DOM 一起被扔掉（看着就是"页面空白"）。
+  // 放在重绘前装载 = 白装；所以统一收在这里，两页各按当前 path 重新挂一次。
+  // （paintOnly 那次重绘也要重挂，所以这里不能再判 paintOnly。）
+  if (r.id === 'knowledge' || r.id === 'kbModels') KB.kick();
   // 引用是"会话内上下文"：切换会话时清空，避免把上一个会话的引用带过去
   if (State._refSession !== State.sessionId) { State._refSession = State.sessionId; State.references = []; }
   renderRefChips();
@@ -8587,7 +9209,8 @@ function openPalette() {
 
   const filter = () => {
     const kw = input.value.trim().toLowerCase();
-    const items = ROUTES.filter(r => !kw
+    // 与侧栏口径一致：hidden 路由（如本地模型）不进跳转列表
+    const items = ROUTES.filter(r => !r.hidden).filter(r => !kw
       || r.label.toLowerCase().includes(kw)
       || r.path.toLowerCase().includes(kw)
       || (GROUP_HINT[r.group] || '').toLowerCase().includes(kw));
@@ -9248,60 +9871,52 @@ async function forkAtTurn(turn, seq) {
     await reloadSessions();
   } catch (e) { UI.err('分叉失败：' + e.message); }
 }
-/* ---------- 作用域上下文条 ---------- */
-/* 作用域条的内容缓存：它每次 render 都会被调用，而内容只在换会话 / 换智能体预设 / 会话跑起来时才变。
-   无条件写 innerHTML 等于"每点一下都在重建这一条（含按钮）"，纯属浪费 —— 与 renderNav 同策略。 */
-let _scopeCache = '';
-
-/* 作用域条该出现在哪些页：
-   只对"内容跟随当前会话、但本页自己不显示是哪个会话"的页面有用。
-   下列页面已经把当前会话身份摆在显眼处，再顶一条纯属重复占地方，显式关掉：
-     · home      首页 hero 卡就有会话标题 / 模型 / 智能体预设 / 工作目录
-     · sessions  会话列表（当前行已标「当前」+ 高亮），本页就是切会话的地方
-     · workspace 当前会话所在空间有 📍 高亮
-     · chat      对话页右侧栏常驻显示模型 / 智能体预设 / 工作目录
-   分组白名单保持不变：全局页（凭据 / 插件 / 设置 / 系统状态）与它无关，本来就不该出现。 */
+/* ---------- 会话上下文 chip（原「作用域条」）----------
+   2026-09-24 改版：原来是内容区顶上一条 43px 的独立 bar，含 4 个块
+   （当前会话 / 智能体预设 / 工作目录 / 运行状态）。实测它占内容区 5%、出现在 10 个页面上，
+   而其中只有「当前会话」是这些页面正文都没有、删了就会迷路的信息：
+     · 智能体预设：会话级属性，「智能体预设」页正文已写「当前会话使用：xxx」；
+     · 工作目录：同上，「工作空间」页正文有 📍 高亮；且路径极长（实测 264px）；
+     · 运行状态：一个 tag 占一整块，对话页 / 作业页本来就有。
+   所以只保留「当前会话」，并**注进各页页头**（.page-title 的空白右侧）——高度直接归零。
+   20 个页面全都有 .page-title，所以这一处就能覆盖全部；万一某页没有，回退到旧 bar
+   （显示它会占 43px，但至少不丢信息）。 */
 const SCOPE_BAR_GROUPS = ['工作台', '对话与会话', '能力与资产'];
 const SCOPE_BAR_OFF = ['home', 'sessions', 'workspace', 'chat'];
+
+/** 生成会话 chip 的 HTML（不含外层容器）。 */
+function scopeChipHtml() {
+  const s = currentSession();
+  const title = s.projections?.values?.title || '';
+  const sessLabel = title ? fmt.mid(title, 30) : '未命名会话';
+  const hint = '当前会话 ID：' + s.sessionId + (title ? '｜标题：' + title : '');
+  const sub = isSubagentSession(s);
+  return '<span class="scope-chip" title="' + fmt.esc(hint) + '">💬 <b>' + fmt.esc(sessLabel) + '</b>'
+    + (title ? '' : ' <span class="mono muted" style="font-size:11px">' + fmt.esc(shortSid(s.sessionId).slice(0, 8)) + '…</span>')
+    + (sub ? '<span class="scope-chip-sub" title="子代理会话，父 ' + fmt.esc(s.parentSessionId || '') + '">子代理</span>'
+        + '<button class="btn sm" onclick="setCurrentSession(' + fmt.attr(s.parentSessionId) + ')">↩ 回父</button>' : '')
+    + '</span>';
+}
 
 function renderScopeBar(route) {
   const el = document.getElementById('scopebar');
   if (!el) return;
   const s = currentSession();
-  const show = SCOPE_BAR_GROUPS.includes(route.group) && !SCOPE_BAR_OFF.includes(route.id);
-  if (!show || !s.sessionId) {
-    if (el.style.display !== 'none') el.style.display = 'none';
-    _scopeCache = '';
-    return;
-  }
-  if (el.style.display === 'none') el.style.display = '';
-  const preset = sessionPreset(s) || '—';
-  const proj = State.skillsScope?.cwd || s.cwd || '—';
-  // 会话项显示**标题**而不是截断的 session id：uuid 截到 22 位再打省略号，既认不出也读不全。
-  // 没有标题时才退回短 id，完整 ID 一律放 title 里（要复制去会话页）。
-  const title = s.projections?.values?.title || '';
-  const sessLabel = title ? fmt.mid(title, 26) : '未命名会话';
-  const sessIdHint = '当前会话 ID：' + s.sessionId + (title ? '｜标题：' + title : '');
-  // 子代理会话：把归属写明白（属于哪个父会话），并提供一键回到父会话。
-  const sub = isSubagentSession(s);
-  const subChip = sub
-    ? '<span class="scope-sep"></span>'
-      + '<span class="scope-item" title="当前会话是子代理会话，父会话 ' + fmt.esc(s.parentSessionId || '') + '。子代理的轨迹/交付物/作业等均属于它自己，父会话不受影响">🧩 子代理 · 父 <b class="mono">' + fmt.esc(shortSid(s.parentSessionId).slice(0, 12)) + '…</b></span>'
-      + '<span class="scope-item"><button class="btn sm" onclick="setCurrentSession(' + fmt.attr(s.parentSessionId) + ')">↩ 回父会话</button></span>'
-    : '';
-  const html =
-    '<span class="scope-item" title="' + fmt.esc(sessIdHint) + '">💬 <b>' + fmt.esc(sessLabel) + '</b>'
-    + (title ? '' : ' <span class="mono muted" style="font-size:11px">' + fmt.esc(shortSid(s.sessionId).slice(0, 8)) + '…</span>')
-    + '</span>'
-    + subChip
-    + '<span class="scope-sep"></span>'
-    + '<span class="scope-item">🧭 智能体预设 <b>' + fmt.esc(preset) + '</b></span>'
-    + '<span class="scope-sep"></span>'
-    // 工作目录常常很长：中间省略显示，完整路径放 title 里（够长时中间省略比截尾巴信息量大）
-    + '<span class="scope-item" title="会话级属性：决定项目级能力的作用域' + (proj ? '｜' + fmt.esc(proj) : '') + '">📁 工作目录 <b class="mono">' + fmt.esc(fmt.mid(proj, 42)) + '</b></span>'
-    + '<span class="scope-sep"></span>'
-    + '<span class="scope-item">' + (s.running ? '<span class="tag ok">运行中</span>' : '<span class="tag gray">空闲</span>') + '</span>';
-  if (html !== _scopeCache) { el.innerHTML = html; _scopeCache = html; }
+  const show = SCOPE_BAR_GROUPS.includes(route.group) && !SCOPE_BAR_OFF.includes(route.id) && !!s.sessionId;
+  // 旧 bar 容器一律不再使用：改版后内容注进页头，容器保持隐藏（保留它是为了少改 index.html）。
+  if (el.style.display !== 'none') el.style.display = 'none';
+  if (!show) return;
+  // 注进当前页页头：.page-title 内已有 .pt-actions（margin-left:auto 靠右），
+  // chip 插在它**前面**并同样靠右，于是顺序是「标题 · 副标题 ……… chip · 按钮组」。
+  const title = document.querySelector('#content .page-title');
+  if (!title) return;
+  const old = title.querySelector('.scope-chip');
+  if (old) old.remove();
+  const actions = title.querySelector('.pt-actions');
+  const wrap = document.createElement('span');
+  wrap.className = 'scope-chip-wrap';
+  wrap.innerHTML = scopeChipHtml();
+  if (actions) title.insertBefore(wrap, actions); else title.appendChild(wrap);
 }
 
 /* ============ 配置 DSH 主机（地址 + 访问令牌）============
