@@ -1206,6 +1206,112 @@ const server = http.createServer(async (req, res) => {
     return void kbSendReactAsset(res, name);
   }
 
+  /* ============ MCP 连接器通道（dsh-mcp-connector 插件）============
+     插件在 DSH 侧挂了三个同源前缀：
+       · POST /mcp-connector/api    JSON-RPC 风格调度（method 白名单 → api 门面）
+       · GET  /mcp-connector/events 轻量 SSE（只含类别+序号+时间，无敏感数据）
+       · GET  /mcp-connector/ui/*   静态 SPA 与市场卡片图标（svg）
+     控制台对它们做**等价转发**（与 /api/kb/* 同一思路）：
+       · /api/mcpc        → POST /mcp-connector/api（请求体原样转发；connect / healthCheck
+                            是秒级到分钟级的操作 —— OAuth 授权要等人操作，不设超时）
+       · /api/mcpc-status → 探测插件是否已挂载（GET /mcp-connector/ui/ 是否 200）
+       · /api/mcpc-ui/*   → 静态资源（市场卡片的 svg 图标按原路径映射过来）
+       · /api/mcpc-events → SSE 字节流双向直通（插件推送「有变更」信号，前端据此自动刷新）
+     为什么走通道而不是通用 /api/* 反代：那一条是 DSH 的 RPC 代理，路径语义不同；
+     而且插件的信任 fence 校验 Host/Origin —— 由服务端转发（不带浏览器 Origin）天然满足。
+     插件没装时 /mcp-connector/* 在 DSH 上是 404：/api/mcpc-status 据此给出明确的
+     unavailable，前端显示安装引导而不是假故障。 */
+  if (pathname === '/api/mcpc-status') {
+    let ok = false, httpStatus = 0, error = '';
+    try {
+      const r = await fetch(DSH + '/mcp-connector/ui/', { headers: authHeaders(), signal: AbortSignal.timeout(4000) });
+      httpStatus = r.status;
+      ok = r.status === 200;
+    } catch (e) { error = e.message; }
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+    return void res.end(JSON.stringify({ available: ok, httpStatus, origin: DSH, at: new Date().toISOString(), ...(error ? { error } : {}) }));
+  }
+  if (pathname === '/api/mcpc' && req.method === 'POST') {
+    const body = [];
+    for await (const c of req) body.push(c);
+    const ac = new AbortController();
+    const onClose = () => { if (!res.writableEnded) ac.abort(); };
+    res.on('close', onClose);
+    const send = () => fetch(DSH + '/mcp-connector/api', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...authHeaders() },
+      body: Buffer.concat(body),
+      signal: ac.signal,
+    });
+    try {
+      let up = await send();
+      // 令牌过期时 DSH 会回 401：就地换一次会话 cookie 再重发（与 /api/* 同策略）
+      if (up.status === 401 && DSH_TOKEN) {
+        const again = await ensureDshAuth(true);
+        if (again.ok) up = await send();
+      }
+      const buf = Buffer.from(await up.arrayBuffer());
+      res.writeHead(up.status, { 'content-type': up.headers.get('content-type') || 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      res.end(buf);
+    } catch (e) {
+      if (ac.signal.aborted) return;
+      res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ ok: false, message: 'DSH 主机不可达: ' + e.message + '（目标 ' + DSH + '）' }));
+    } finally {
+      res.off('close', onClose);
+    }
+    return;
+  }
+  if (pathname.startsWith('/api/mcpc-ui/')) {
+    // 市场卡片的 svg 图标等静态资源：按原相对路径映射到插件的 /mcp-connector/ui/*
+    const rel = pathname.slice('/api/mcpc-ui'.length) || '/';
+    try {
+      const r = await fetch(DSH + '/mcp-connector/ui' + rel, { headers: authHeaders(), signal: AbortSignal.timeout(8000) });
+      const buf = r.status === 200 ? Buffer.from(await r.arrayBuffer()) : null;
+      if (!buf) { res.writeHead(r.status, { 'content-type': 'text/plain; charset=utf-8' }); return void res.end('not found'); }
+      res.writeHead(200, {
+        'content-type': r.headers.get('content-type') || 'application/octet-stream',
+        'cache-control': 'public, max-age=86400',   // 图标按插件版本变化，浏览器缓存一天足够
+      });
+      return void res.end(buf);
+    } catch (e) {
+      res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' });
+      return void res.end('DSH 主机不可达: ' + e.message);
+    }
+  }
+  if (pathname === '/api/mcpc-events') {
+    // SSE 直通：插件的实时状态事件（connections/catalog/status/tools/…）。
+    // 浏览器 EventSource 连控制台，控制台连插件；字节双向直通，直到任一侧断开。
+    try {
+      const up = await fetch(DSH + '/mcp-connector/events', { headers: { accept: 'text/event-stream', ...authHeaders() } });
+      if (!up.ok || !up.body) {
+        res.writeHead(up.status || 502, { 'content-type': 'text/plain; charset=utf-8' });
+        return void res.end('插件状态流不可用（HTTP ' + up.status + '）');
+      }
+      res.writeHead(200, {
+        'content-type': 'text/event-stream; charset=utf-8',
+        'cache-control': 'no-store, no-transform',
+        'connection': 'keep-alive',
+        'x-accel-buffering': 'no',
+      });
+      const reader = up.body.getReader();
+      req.on('close', () => { try { reader.cancel(); } catch {} });
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (!res.write(Buffer.from(value))) {
+            await new Promise((resolve) => res.once('drain', resolve));
+          }
+        }
+      } catch { /* 上游断开属正常（心跳超时 / DSH 重启） */ }
+      try { res.end(); } catch {}
+    } catch (e) {
+      try { res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' }); res.end('SSE 桥接失败: ' + e.message); } catch {}
+    }
+    return;
+  }
+
   // 本地接口（不转发给 DSH）
   /* DSH 目标配置：地址 + 令牌。
      GET  → 当前状态（是否已配置、是否已认证、失败原因）

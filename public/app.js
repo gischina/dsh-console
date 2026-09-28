@@ -543,6 +543,9 @@ const State = { sessionId: null, sessions: [], host: null, skills: [], presets: 
                 pluginFilter: '',
                 trajectory: null, deliverables: null, producedFiles: null, workflowRuns: null,
                 workspaces: null, credentials: null,
+                mcpc: { available: null, probeAt: 0, tab: 'conn', version: null, versionAt: 0,
+                        items: null, statusAt: 0, catalog: null, catalogAt: 0, cat: '', kw: '',
+                        toolQuery: '', toolConn: '', toolItems: null, toolTotal: 0, toolOffset: 0, toolLoaded: false },
                 ftree: { scopeSession: null, dirs: {}, expanded: {}, preview: null, error: null } };
 
 /** 是否子代理会话（origin 由 session/list 返回：'user' | 'subagent' | …） */
@@ -2638,17 +2641,21 @@ const PAGE_HELP = {
     tip: '根目录显示「未创建」是正常的：DSH 不会自动建目录，放进去后才会出现技能。',
   },
   mcp: {
-    what: 'MCP（Model Context Protocol）服务清单：配置了哪些服务、能否连上、实际注入了多少工具。',
-    src: '本机 <code>/api/local/mcp</code>（配置解析 + TCP 探测 + 握手统计）+ 插件运行时 <code>pluginInventory/list</code>',
+    what: 'MCP 连接中心：市场一键连接、已连接清单与健康检查、跨连接工具搜索，外加本机 cordis.patch.yml 配置的服务清单。',
+    src: 'MCP 连接器插件 <code>/mcp-connector/api</code>（catalog / status / healthCheck / connect / importJson…，经 <code>/api/mcpc</code> 等价转发，插件没装时给安装引导）'
+      + '+ 本机 <code>/api/local/mcp</code>（cordis.patch.yml 解析 + TCP 探测 + 握手统计）',
     use: [
-      '每个 MCP 服务对应一个插件实例；服务清单来自本机配置解析 + TCP 探测。',
-      '逐项看：服务名、命名空间、传输方式、地址或启动命令、工具数及其来源。',
-      '「工具数」优先取真实握手结果，其次取 <code>mcp-tools.json</code> 快照。',
-      '「查看清单」列出该服务注入的工具全名（<code>mcp__&lt;服务名&gt;__&lt;工具名&gt;</code>）。',
-      '「🔄 重新握手」重做一次 TCP 探测 + 握手，成功后自动回写 <code>mcp-tools.json</code> 快照。',
+      '「市场」页签：111+ 个连接器按分类浏览、关键词搜索，免凭据的点「连接」即通；凭据型弹表单，OAuth 型拉起授权页。',
+      '「已连接」页签：每条连接可 🩺测活 / 🧰列工具 / ✏️改名 / ⚙️编辑配置（敏感值以 <code>"&lt;KEEP&gt;"</code> 保留标记沿用）/ ⏸停用 / ✂️断开。',
+      '「➕ 添加连接」三个入口：导入 mcpServers JSON、手动配置（HTTP / stdio）、从 URL 安装连接器目录。',
+      '**默认本地 MCP**：内置 <code>GeoScenePro</code>（stdio：<code>StartGeoSceneMcp</code>，随 GeoScene Pro 安装）——没连接时点「🏠 启用默认本地 MCP」一键加上，「添加连接 → 导入 JSON」里也有默认模板；清单里会带「默认」标。',
+      '「工具」页签：跨全部连接搜索工具（含参数 schema 详情）；新连接的工具由插件在后台自动发现。',
+      '「本机配置」页签：随 DSH 启动加载的服务（如内置 GeoScene Pro），清单来自配置解析 + 探测，与连接器互不影响。',
+      '插件状态有 SSE 实时推送：连接变更时本页自动刷新，不必手动刷。',
     ],
-    go: ['plugins', 'host', 'credentials'],
-    tip: '新增服务要改 <code>~/.dsh/profiles/web/cordis.patch.yml</code> 并**重启 <code>dsh web</code>**（该 profile 的 HMR 是关闭的），重启后再点「重新握手」。',
+    go: ['plugins', 'credentials', 'host'],
+    tip: '「本机配置」层新增服务要改 <code>~/.dsh/profiles/web/cordis.patch.yml</code> 并**重启 <code>dsh web</code>**（该 profile 的 HMR 是关闭的）；'
+      + '连接器层（市场/手动/JSON）由插件热管理，**免重启**。',
   },
   plugins: {
     what: 'Cordis 插件树清单：本部署到底装了哪些插件、来自哪一层、哪些被禁用、哪些属于安全敏感类。',
@@ -2946,8 +2953,10 @@ const EMPTY_GUIDE = {
   mcp: {
     title: '怎么新增一个 MCP 服务',
     steps: [
-      '编辑 <code>~/.dsh/profiles/web/cordis.patch.yml</code>，为该服务加一个插件实例（每个服务一个实例）。',
-      '重启 <code>dsh web</code>（该 profile 的 HMR 已关闭），回到本页点「🔄 重新握手」。',
+      '**最快**：本页直接点「🏠 启用默认本地 MCP」——一键加上内置的 GeoScene Pro 本地 MCP（stdio：StartGeoSceneMcp，免重启、即配即测）。',
+      '**推荐**：装 MCP 连接器插件（<code>dsh plugin --profile web add dsh-mcp-connector</code>，重启 <code>dsh web</code>），然后在「市场」页签一键连接，或在「➕ 添加连接」里粘贴 JSON / 手动配置 —— **免重启、即配即测**。',
+      '传统方式：编辑 <code>~/.dsh/profiles/web/cordis.patch.yml</code>，为该服务加一个插件实例（每个服务一个实例）。',
+      '传统方式改完需重启 <code>dsh web</code>（该 profile 的 HMR 已关闭），回到本页「⚙️ 本机配置」点「🔄 重新握手」。',
     ],
     prompt: '（无需对话）配置文件片段，加到 ~/.dsh/profiles/web/cordis.patch.yml：\nplugins:\n  "@deepseek-ai/dsh-mcp-client":\n    servers:\n      - name: filesystem\n        transport: stdio\n        command: npx\n        args: ["-y", "@modelcontextprotocol/server-filesystem", "C:/data"]',
   },
@@ -3137,6 +3146,13 @@ const PAGE_CHECKS = {
       }, want: r => (r.roots || []).length + ' 个根 · 已存在 ' + (r.roots || []).filter(x => x.exists).length + ' 个' },
   ],
   mcp: [
+    { name: 'MCP 连接器插件（市场 / 连接管理）', opt: true, fn: async () => {
+        const p = await (await fetch('/api/mcpc-status')).json();
+        if (!p.available) throw new Error('未安装 dsh-mcp-connector（可选插件）');
+        const r = await mcpcApi('status', {});
+        if (!r.ok) throw new Error(r.message);
+        return r;
+      }, want: r => '插件可用 · ' + ((r.detail && r.detail.items) || []).length + ' 条连接' },
     { name: 'MCP 配置解析 + 探测（本机）', fn: () => fetch('/api/local/mcp').then(r => r.json()),
       want: m => (m.servers || []).length + ' 个服务 · 已连接 ' + (m.servers || []).filter(s => s.status === 'connected').length },
     { name: 'MCP 插件运行时 pluginInventory/list', fn: () => API.call('pluginInventory/list', { args: {} }),
@@ -4274,22 +4290,407 @@ Pages.models = () => {
   <div class="card" id="provcard">${provSectionHtml()}</div>`;
 };
 
-Pages.mcp = () => `
+/* ============================================================
+   MCP 连接器（dsh-mcp-connector 插件）：市场 / 已连接 / 工具 / 本机配置
+   ------------------------------------------------------------
+   插件在 DSH 侧挂了三个同源前缀，控制台经 /api/mcpc* 等价转发：
+     POST /api/mcpc        → POST <DSH>/mcp-connector/api（method 白名单调度）
+     GET  /api/mcpc-status → 插件是否已挂载（GET /mcp-connector/ui/ 是否 200）
+     GET  /api/mcpc-ui/*   → 市场卡片的静态资源（svg 图标）
+     GET  /api/mcpc-events → SSE 实时状态（插件只推「类别+序号+时间」，无敏感数据）
+   页面四个页签：已连接 / 市场 / 工具 / 本机配置。
+   「本机配置」是原先整页的内容（cordis.patch.yml 解析 + TCP 探测 + MCP 握手），
+   与插件管理的连接是两套机制：前者随 DSH 启动加载，后者由插件热管理、免重启。
+   插件没装时前三个页签不出现、给出安装引导 —— 探测依据是真实结果，不假装可用。
+   ============================================================ */
+
+/* ---------- 插件 API 访问 ---------- */
+/** 打一个 MCP 连接器方法。返回插件的原始信封 {ok, message, detail?}；
+ *  网络层 / 非 JSON 响应都折算成 {ok:false, message}，调用方只需要看 ok。 */
+async function mcpcApi(method, params) {
+  let r;
+  try {
+    r = await fetch('/api/mcpc', { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ method, params: params || {} }) });
+  } catch (e) { return { ok: false, message: '无法连接控制台后端: ' + e.message }; }
+  try { return await r.json(); }
+  catch { return { ok: false, message: '插件接口返回异常（HTTP ' + r.status + '）' }; }
+}
+
+/* ---------- 内置默认：本地 GeoScene Pro MCP ---------- */
+/** 默认本地 MCP（GeoScene Pro 随装的 StartGeoSceneMcp，stdio）。
+ *  与 DSH「MCP 选项 → Studio 连接配置方式」里的启动配置一致：
+ *  {"mcpServers":{"GeoScenePro":{"command":"StartGeoSceneMcp"}}}。
+ *  只是前端预设模板 —— 实际添加仍走插件 importJson，控制台不自存数据。 */
+const MCPC_DEFAULT_LOCAL = {
+  key: 'json-geoscenepro',
+  name: 'GeoScenePro',
+  label: 'GeoScene Pro 本地 MCP',
+  json: JSON.stringify({ mcpServers: { GeoScenePro: { command: 'StartGeoSceneMcp' } } }, null, 2),
+};
+/** 该连接是否已在清单里（按 key 或名称匹配，改名后仍认得出） */
+function mcpcHasDefault(items) {
+  return (items || []).some(x => x.key === MCPC_DEFAULT_LOCAL.key
+    || /geoscenepro/i.test(x.name) || /geoscenepro/i.test(x.serverName || ''));
+}
+/** 一键启用默认本地 MCP：走插件 importJson（导入即实测，失败不保存） */
+async function mcpcEnableDefault() {
+  if (mcpcHasDefault(State.mcpc.items)) { UI.info('默认本地 MCP（' + MCPC_DEFAULT_LOCAL.label + '）已在连接清单里'); return; }
+  UI.info('正在添加默认本地 MCP（' + MCPC_DEFAULT_LOCAL.label + '）…（导入即实测连通性）');
+  const r = await mcpcApi('importJson', { json: MCPC_DEFAULT_LOCAL.json });
+  if (!r.ok) { UI.err(r.message || '默认本地 MCP 添加失败'); return; }
+  UI.ok(r.message || '默认本地 MCP 已添加');
+  await mcpcLoadStatus(true);
+  if (State.mcpc.tab !== 'conn') mcpcTab('conn'); else render({ paintOnly: true });
+}
+
+/* ---------- 加载器（带 TTL；paintOnly 重绘不重跑） ---------- */
+const MCPC_TTL = 5000;            // 连接清单：5s
+const MCPC_CATALOG_TTL = 300000;  // 市场目录：5min（刷新目录走 mcpcRefreshCatalog 强制）
+const MCPC_VERSION_TTL = 600000;  // 版本状态：10min（检查更新走 mcpcCheckUpdate 强制）
+function mcpcFresh(at, ttl) { return at && Date.now() - at < ttl; }
+
+/** MCP 页加载器：探测插件可用性 → 并行拉版本 / 连接清单（+ 当前页签的数据）。
+ *  返回 true 让 render() 在数据到手后重绘一次。 */
+async function loadMcpc(force) {
+  const M = State.mcpc;
+  if (M.available === null || force || !mcpcFresh(M.probeAt, 30000)) {
+    try { const p = await (await fetch('/api/mcpc-status')).json(); M.available = !!p.available; }
+    catch { M.available = false; }
+    M.probeAt = Date.now();
+  }
+  if (!M.available) return true;
+  mcpcWatch();
+  await Promise.all([
+    mcpcLoadVersion(force),
+    mcpcLoadStatus(force),
+    M.tab === 'market' ? mcpcLoadCatalog(force) : Promise.resolve(),
+    (M.tab === 'tools' && M.toolLoaded) ? mcpcToolBrowse(false) : Promise.resolve(),
+  ]);
+  return true;
+}
+async function mcpcLoadVersion(force) {
+  const M = State.mcpc;
+  if (!force && M.version && mcpcFresh(M.versionAt, MCPC_VERSION_TTL)) return;
+  const r = await mcpcApi('versionStatus', { force: !!force });
+  if (r.ok) { M.version = r.detail; M.versionAt = Date.now(); }
+}
+async function mcpcLoadStatus(force) {
+  const M = State.mcpc;
+  if (!force && mcpcFresh(M.statusAt, MCPC_TTL)) return;
+  const r = await mcpcApi('status', {});
+  if (r.ok) { M.items = r.detail.items || []; M.statusAt = Date.now(); }
+}
+async function mcpcLoadCatalog(force) {
+  const M = State.mcpc;
+  if (!force && M.catalog && mcpcFresh(M.catalogAt, MCPC_CATALOG_TTL)) return;
+  const r = await mcpcApi('catalog', {});
+  if (r.ok) { M.catalog = r.detail.items || []; M.catalogAt = Date.now(); }
+}
+
+/* ---------- 实时状态（SSE）----------
+   插件的 SSE 只发「有变更」信号（不含数据）：收到后防抖刷新一次连接清单。
+   EventSource 自带断线重连；控制台后端负责把 DSH 的会话 cookie 带上。 */
+let MCPC_ES = null, MCPC_ES_TIMER = null;
+function mcpcWatch() {
+  if (MCPC_ES || typeof EventSource === 'undefined') return;
+  try { MCPC_ES = new EventSource('/api/mcpc-events'); } catch { return; }
+  MCPC_ES.addEventListener('status', () => {
+    if (routeOf(currentPath()).id !== 'mcp') return;   // 不在本页就不白刷
+    clearTimeout(MCPC_ES_TIMER);
+    MCPC_ES_TIMER = setTimeout(async () => {
+      await mcpcLoadStatus(true);
+      if (State.mcpc.tab === 'conn') render({ paintOnly: true });
+    }, 1200);
+  });
+}
+
+/* ---------- 通用小组件 ---------- */
+function mcpcTime(ts) { return ts ? new Date(ts).toLocaleString('zh-CN', { hour12: false }) : '—'; }
+function mcpcStateTag(s) {
+  const map = {
+    healthy: '<span class="tag ok">● 正常</span>',
+    reauth: '<span class="tag warn">🔑 需重新授权</span>',
+    recovering: '<span class="tag warn">↻ 恢复中</span>',
+    degraded: '<span class="tag warn">◐ 降级</span>',
+    unavailable: '<span class="tag err">✕ 不可用</span>',
+    disabled: '<span class="tag gray">⏸ 已停用</span>',
+    unknown: '<span class="tag gray">? 未知</span>',
+  };
+  return map[s] || '<span class="tag gray">' + fmt.esc(s || '未知') + '</span>';
+}
+function mcpcAuthLabel(mode) {
+  return { 'oauth2-pkce': '<span class="tag gray">OAuth 登录</span>',
+    'bearer': '<span class="tag gray">Bearer</span>',
+    'api-key': '<span class="tag gray">API Key</span>' }[mode] || '';
+}
+/** 市场卡片的 svg 图标走控制台通道（浏览器同源限制读不到 DSH 的 3080） */
+function mcpcIconSrc(icon) { return icon ? '/api/mcpc-ui/' + String(icon).replace(/^\/mcp-connector\/ui\//, '') : ''; }
+/** 统一的结果提示：插件每个方法都返回 {ok, message}，message 本来就是给人读的 */
+function mcpcToast(r) { if (r.ok) UI.ok(r.message || '完成'); else UI.err(r.message || '操作失败'); return r.ok; }
+/** onclick 参数是 JSON 字符串（fmt.attr 负责转义），这里解回来 */
+function mcpcArg(v) { try { return JSON.parse(v); } catch { return v; } }
+
+/* ---------- 页面 ---------- */
+/** 切页签：先 paintOnly 画出骨架（含加载态），再按页签**惰性触发数据加载**——
+ *  ⚠️ paintOnly 的 render() 不跑加载器，市场/工具的数据只在这里补触发，
+ *  否则切过去会永远停在「正在读取…」（数据到了再局部重绘一次）。 */
+function mcpcTab(t) {
+  const M = State.mcpc;
+  M.tab = t;
+  render({ paintOnly: true });
+  if (t === 'market') mcpcLoadCatalog().then(() => { if (routeOf(currentPath()).id === 'mcp') render({ paintOnly: true }); });
+  if (t === 'tools' && !M.toolLoaded) mcpcToolBrowse(true);
+}
+/** 市场分类筛选：'' 全部 · '★' 推荐 · 其它值=分类名 */
+function mcpcSetCat(v) { State.mcpc.cat = mcpcArg(v); render({ paintOnly: true }); }
+
+Pages.mcp = () => {
+  const M = State.mcpc;
+  const tab = (id, label, n) =>
+    '<button class="mcpc-tab' + (M.tab === id ? ' on' : '') + '" onclick="mcpcTab(\'' + id + '\')">' + label
+    + (n == null ? '' : ' <span class="mcpc-n">' + n + '</span>') + '</button>';
+  const body = !M.available
+    ? (M.available === null
+      ? '<div class="card"><div class="empty"><span class="loading"></span> 正在探测 MCP 连接器插件…</div></div>'
+      : mcpcUnavailableHtml())
+    : (M.tab === 'conn' ? mcpcConnHtml()
+      : M.tab === 'market' ? mcpcMarketHtml()
+      : M.tab === 'tools' ? mcpcToolsHtml()
+      : mcpcLocalHtml());
+  return `
   <div class="page-title"><h2>MCP 服务</h2><span class="sub">Model Context Protocol 服务${scopeTag('global')}</span>
     <span class="pt-actions">
-      <button class="btn sm" onclick="reloadMcp()" title="重新做 TCP 探测 + MCP 握手，成功后自动回写 mcp-tools.json">🔄 重新握手</button>
-      
+      ${M.available ? (M.items && !mcpcHasDefault(M.items)
+        ? '<button class="btn sm" onclick="mcpcEnableDefault()" title="添加内置默认：GeoScene Pro 本地 MCP（stdio：StartGeoSceneMcp）">🏠 启用默认本地 MCP</button>' : '')
+        + '<button class="btn sm primary" onclick="mcpcAddDialog()">➕ 添加连接</button>'
+        + '<button class="btn sm" onclick="mcpcHealthAll()" title="对全部连接做一次真实健康检查">🩺 全部测活</button>'
+        + '<button class="btn sm" onclick="mcpcRefreshCatalog()" title="重新拉取市场目录（含插件侧动态上架）">🔄 刷新目录</button>'
+        + '<button class="btn sm" onclick="mcpcExport()" title="导出全部连接的脱敏配置 JSON（可搬到别的机器）">📤 导出配置</button>' : ''}
     </span>
   </div>
   ${crumbOf('mcp')}
   ${pageHelp('mcp')}
+  ${M.available ? mcpcVersionBar() : ''}
+  ${M.available ? '<div class="mcpc-tabs">'
+    + tab('conn', '🔗 已连接', M.items ? M.items.length : null)
+    + tab('market', '🛍️ 市场', M.catalog ? M.catalog.length : null)
+    + tab('tools', '🧰 工具')
+    + tab('local', '⚙️ 本机配置', State.mcp ? State.mcp.length : null)
+    + '</div>' : ''}
+  ${body}`;
+};
 
-  ${!State.mcp ? '<div class="card"><div class="empty"><span class="loading"></span> 正在读取 MCP 配置…</div></div>' : ''}
-  ${State.mcp && !State.mcp.length ? '<div class="card"><div class="empty">本部署没有配置任何 MCP 服务</div>' + emptyGuide('mcp') + '</div>' : ''}
-  ${(State.mcp || []).map(s => {
-    const on = s.online;
-    return `
-    <div class="card mb">
+/** 插件未安装时的引导卡 + 仍可用的本机配置 */
+function mcpcUnavailableHtml() {
+  return '<div class="card">'
+    + '<h3>🧩 MCP 连接器插件未安装</h3>'
+    + '<p class="muted" style="margin-top:6px">「市场 / 已连接管理 / 工具浏览」由 DSH 侧的第三方插件 <code>dsh-mcp-connector</code> 提供；'
+    + '装好后本页会自动出现这三个页签，控制台侧不需要任何配置。</p>'
+    + '<p style="font-size:12.5px;margin-top:8px">安装（在装着 DSH 的终端里）：<code>dsh plugin --profile web add dsh-mcp-connector</code>'
+    + '（插件管理语法以 <code>dsh plugin --help</code> 为准），装完重启 <code>dsh web</code>。</p>'
+    + '<div class="pg-tip" style="margin-top:8px">ℹ️ 探测依据：<code>GET /mcp-connector/ui/</code> 是否返回 200 —— '
+    + '这是真实结果，不是故障。下方的「本机配置」不依赖插件，照常可用。</div>'
+    + '<div style="margin-top:12px"><button class="btn" onclick="loadMcpc(true).then(()=>render({refreshed:true}))">🔄 重新探测</button></div>'
+    + '</div>' + mcpcLocalHtml();
+}
+
+/** 版本横条：当前版本 / 更新状态 / 检查更新 */
+function mcpcVersionBar() {
+  const v = State.mcpc.version;
+  if (!v) return '';
+  const upd = v.updateAvailable === true || v.releasePending === true;
+  return '<div class="mcpc-verbar">'
+    + '<span class="tag ' + (upd ? 'warn' : 'ok') + '">🧩 MCP 连接器 v' + fmt.esc(v.installedVersion || '?') + '</span>'
+    + (upd ? '<span class="tag warn">有新版 v' + fmt.esc(v.latestVersion || '?') + '</span>' : '')
+    + '<span class="muted" style="font-size:11.5px">'
+    + (upd ? 'npm 最新版 v' + fmt.esc(v.latestVersion || '?')
+      : '已是 npm 最新版' + (v.checkedAt ? ' · 检查于 ' + mcpcTime(v.checkedAt) : ''))
+    + '</span>'
+    + '<button class="btn sm" onclick="mcpcCheckUpdate()">🔄 检查更新</button>'
+    + (v.releasesUrl ? '<a class="btn sm" href="' + fmt.esc(v.releasesUrl) + '" target="_blank" rel="noreferrer">发布页 ↗</a>' : '')
+    + '</div>';
+}
+
+/* ---------- 页签一：已连接 ---------- */
+function mcpcConnHtml() {
+  const M = State.mcpc;
+  if (!M.items) return '<div class="card"><div class="empty"><span class="loading"></span> 正在读取连接清单…</div></div>';
+  if (!M.items.length) {
+    return '<div class="card"><div class="empty">还没有任何 MCP 连接。<br>'
+      + '<span class="muted" style="font-size:12px">可一键启用内置的默认本地 MCP（GeoScene Pro），或从市场一键连接、在「添加连接」里粘贴 mcpServers JSON / 手动配置。</span></div>'
+      + '<div style="text-align:center;margin:14px 0 6px">'
+      + '<button class="btn primary" onclick="mcpcEnableDefault()">🏠 启用默认本地 MCP（' + fmt.esc(MCPC_DEFAULT_LOCAL.label) + '）</button> '
+      + '<button class="btn" onclick="mcpcAddDialog()">➕ 添加连接</button> '
+      + '<button class="btn" onclick="mcpcTab(\'market\')">🛍️ 去市场逛逛</button></div></div>';
+  }
+  const stat = { ok: 0, bad: 0, off: 0 };
+  for (const x of M.items) {
+    if (x.enabled === false) stat.off++;
+    else if (x.connectionState === 'healthy') stat.ok++;
+    else if (['reauth', 'recovering', 'degraded', 'unavailable'].includes(x.connectionState)) stat.bad++;
+  }
+  const rows = M.items.map(x => {
+    const acts = [
+      '<button class="btn sm" onclick="mcpcHealth(' + fmt.attr(x.key) + ')" title="重做一次真实健康检查">🩺 测活</button>',
+      '<button class="btn sm" onclick="mcpcConnTools(' + fmt.attr(x.key) + ')" title="向 server 发一次 tools/list，列出注入的工具">🧰 工具</button>',
+    ];
+    if (x.canRename) acts.push('<button class="btn sm" onclick="mcpcRename(' + fmt.attr(x.key) + ')">✏️ 改名</button>');
+    if (x.canEditConfiguration) acts.push('<button class="btn sm" onclick="mcpcEdit(' + fmt.attr(x.key) + ')" title="编辑并重连（敏感值以保留标记沿用，不会回显）">⚙️ 配置</button>');
+    acts.push(x.enabled === false
+      ? '<button class="btn sm" onclick="mcpcToggle(' + fmt.attr(x.key) + ', true)">▶ 启用</button>'
+      : '<button class="btn sm" onclick="mcpcToggle(' + fmt.attr(x.key) + ', false)">⏸ 停用</button>');
+    acts.push('<button class="btn sm danger" onclick="mcpcDisconnect(' + fmt.attr(x.key) + ')">✂️ 断开</button>');
+    const scope = x.scope
+      ? '<span class="tag gray" title="' + fmt.esc(JSON.stringify(x.scope.binding || {})) + '">' + fmt.esc(x.scope.label || '—') + '</span>'
+      : '';
+    const grant = (x.grant && x.grant.needsReauth)
+      ? '<div style="font-size:11px;color:var(--warn)">🔑 ' + fmt.esc(x.grant.lastRefreshError || '授权需刷新，请重新连接') + '</div>' : '';
+    const errline = (x.healthMessage ? '<div class="muted" style="font-size:11px">' + fmt.esc(x.healthMessage) + '</div>' : '')
+      + (x.lastError ? '<div class="muted" style="font-size:11px;color:var(--danger-fg)">' + fmt.esc(x.lastError) + '</div>' : '');
+    const auth = x.authMode && x.authMode !== 'none'
+      ? (x.authMode === 'oauth' ? '<span class="tag gray">OAuth</span>' : mcpcAuthLabel(x.authMode) || '<span class="tag gray">' + fmt.esc(x.authMode) + '</span>')
+      : '';
+    return '<tr>'
+      + '<td><b>' + fmt.esc(x.name) + '</b>'
+      + (/geoscenepro/i.test(x.key) || /geoscenepro/i.test(x.name) || /geoscenepro/i.test(x.serverName || '')
+        ? ' <span class="tag ok" title="内置默认本地 MCP（StartGeoSceneMcp）">默认</span>' : '')
+      + (x.insecurePrivateNetwork ? ' <span class="tag warn">私网直连</span>' : '')
+      + '<div class="muted mono" style="font-size:10.5px">' + fmt.esc(x.key) + '</div>'
+      + grant + errline + '</td>'
+      + '<td class="mono" style="font-size:11.5px;max-width:260px;word-break:break-all">' + fmt.esc(x.endpoint || x.url || '')
+      + ' <span class="tag gray">' + fmt.esc(x.transport || '') + '</span></td>'
+      + '<td>' + (auth || '<span class="muted" style="font-size:11px">无鉴权</span>') + '</td>'
+      + '<td>' + mcpcStateTag(x.connectionState)
+      + '<div class="muted" style="font-size:10.5px">成功于 ' + mcpcTime(x.lastSuccessfulAt) + '</div></td>'
+      + '<td>' + scope + '</td>'
+      + '<td style="white-space:nowrap">' + acts.join(' ') + '</td>'
+      + '</tr>';
+  }).join('');
+  return '<div class="card">'
+    + '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px">'
+    + '<span class="tag ok">' + stat.ok + ' 正常</span>'
+    + (stat.bad ? '<span class="tag warn">' + stat.bad + ' 需处理</span>' : '')
+    + (stat.off ? '<span class="tag gray">' + stat.off + ' 已停用</span>' : '')
+    + '<span class="muted" style="font-size:11.5px">状态由插件的连接健康检查维护；SSE 推送变更时本页自动刷新。</span>'
+    + '<span style="flex:1"></span>'
+    + '<button class="btn sm" onclick="mcpcAddDialog()">➕ 添加连接</button>'
+    + '<button class="btn sm" onclick="mcpcHealthAll()">🩺 全部测活</button>'
+    + '</div>'
+    + '<div style="overflow-x:auto"><table><thead><tr><th>连接</th><th>端点</th><th>鉴权</th><th>状态</th><th>作用域</th><th>操作</th></tr></thead>'
+    + '<tbody>' + rows + '</tbody></table></div>'
+    + '</div>';
+}
+
+/* ---------- 页签二：市场 ---------- */
+function mcpcMarketHtml() {
+  const M = State.mcpc;
+  if (!M.catalog) return '<div class="card"><div class="empty"><span class="loading"></span> 正在读取市场目录…</div></div>';
+  const cats = [...new Set(M.catalog.map(d => d.category).filter(Boolean))];
+  const kw = (M.kw || '').trim().toLowerCase();
+  const items = M.catalog.filter(d =>
+    (!M.cat || (M.cat === '★' ? d.featured === true : d.category === M.cat))
+    && (!kw || [d.name, d.vendor, d.summary, (d.tags || []).join(' ')].join(' ').toLowerCase().includes(kw)));
+  const chip = (val, label, n) =>
+    '<button class="mcpc-chip' + (M.cat === val ? ' on' : '') + '" onclick="mcpcSetCat(' + fmt.attr(val) + ')">' + label
+    + (n != null ? ' <span class="mcpc-n">' + n + '</span>' : '') + '</button>';
+  const bar = '<div class="card" style="padding:10px 14px">'
+    + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+    + '<input id="mcpckw" placeholder="搜索：名称 / 厂商 / 摘要 / 标签" value="' + fmt.esc(M.kw || '') + '" style="flex:1 1 220px;min-width:180px"'
+    + ' oninput="State.mcpc.kw=this.value;render({paintOnly:true})">'
+    + '<button class="btn sm" onclick="mcpcRefreshCatalog()">🔄 刷新目录</button>'
+    + '</div>'
+    + '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">'
+    + chip('', '全部', M.catalog.length)
+    + chip('★', '⭐ 推荐', M.catalog.filter(d => d.featured).length)
+    + cats.map(c => chip(c, fmt.esc(c), M.catalog.filter(d => d.category === c).length)).join('')
+    + '</div></div>';
+  if (!items.length) return bar + '<div class="card"><div class="empty">没有匹配的连接器 —— 换个关键词或分类试试</div></div>';
+  const cards = items.map(d => {
+    const connected = (d.connected || []).length;
+    const stateTag = connected > 0
+      ? (d.connectionState === 'healthy' ? '<span class="tag ok">● 已连接 ' + connected + '</span>'
+        : d.connectionState === 'disabled' ? '<span class="tag gray">⏸ 已停用</span>'
+        : mcpcStateTag(d.connectionState))
+      : '';
+    const icon = d.icon
+      ? '<img class="mcpc-ico" src="' + fmt.esc(mcpcIconSrc(d.icon)) + '" alt="" loading="lazy" onerror="this.style.display=\'none\'">'
+      : '<div class="mcpc-ico mcpc-ico-ph">🔌</div>';
+    return '<div class="card mcpc-card">'
+      + '<div style="display:flex;gap:10px;align-items:flex-start">' + icon
+      + '<div style="flex:1;min-width:0"><b>' + fmt.esc(d.name) + (d.featured ? ' ⭐' : '') + '</b>'
+      + '<div class="muted" style="font-size:11px">' + fmt.esc(d.vendor || '') + ' · ' + fmt.esc(d.category || '其他') + '</div></div></div>'
+      + '<p style="font-size:12px;margin:8px 0 6px">' + fmt.esc(d.summary || '') + '</p>'
+      + '<div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center">'
+      + (d.tags || []).slice(0, 4).map(t => '<span class="tag gray">' + fmt.esc(t) + '</span>').join('')
+      + mcpcAuthLabel(d.authMode) + stateTag + '</div>'
+      + '<div style="display:flex;gap:6px;margin-top:10px;justify-content:flex-end">'
+      + '<button class="btn sm" onclick="mcpcDetail(' + fmt.attr(d.id) + ')">详情</button>'
+      + '<button class="btn sm primary" onclick="mcpcConnect(' + fmt.attr(d.id) + ')">' + (connected ? '再连一个' : '连接') + '</button>'
+      + '</div></div>';
+  }).join('');
+  return bar + '<div class="mcpc-grid">' + cards + '</div>'
+    + '<div class="muted" style="font-size:11.5px;margin-top:8px">共 ' + items.length + ' 个连接器'
+    + (kw ? '（已按「' + fmt.esc(kw) + '」过滤）' : '')
+    + ' · 目录由插件维护并持续更新，本地无写死清单</div>';
+}
+
+/* ---------- 页签三：工具 ---------- */
+function mcpcToolsHtml() {
+  const M = State.mcpc;
+  const conns = (M.items || []).filter(x => x.enabled !== false);
+  const sel = '<select class="mcpc-sel" onchange="State.mcpc.toolConn=this.value;mcpcToolBrowse(true)">'
+    + '<option value="">全部连接</option>'
+    + conns.map(x => '<option value="' + fmt.esc(x.key) + '"' + (M.toolConn === x.key ? ' selected' : '') + '>' + fmt.esc(x.name) + '</option>').join('')
+    + '</select>';
+  const bar = '<div class="card" style="padding:10px 14px">'
+    + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+    + '<input id="mcpctoolq" placeholder="搜索全部已连接 MCP 的工具（名称 / 标题 / 描述）" value="' + fmt.esc(M.toolQuery || '') + '"'
+    + ' style="flex:1 1 240px;min-width:200px" oninput="State.mcpc.toolQuery=this.value;mcpcToolDebounce()">'
+    + sel
+    + '<button class="btn sm" onclick="mcpcToolBrowse(true)">🔍 搜索</button>'
+    + '</div>'
+    + '<div class="muted" style="font-size:11px;margin-top:6px">来源是「最近一次成功发现的工具缓存」；新连接的工具由插件在后台自动发现，'
+    + '也可在「已连接」页对该连接点「🧰 工具」强制刷新一次。</div>'
+    + '</div>';
+  if (!conns.length) return bar + '<div class="card"><div class="empty">没有已启用的连接 —— 先去「已连接」或「市场」添加</div></div>';
+  if (!M.toolLoaded || !M.toolItems) return bar + '<div class="card"><div class="empty"><span class="loading"></span> 正在读取工具缓存…</div></div>';
+  if (!M.toolItems.length) return bar + '<div class="card"><div class="empty">'
+    + (M.toolQuery ? '没有匹配「' + fmt.esc(M.toolQuery) + '」的工具' : '工具缓存还是空的 —— 新连接的工具正在后台发现，稍等片刻再试')
+    + '</div></div>';
+  const PAGE = 30;
+  const pages = Math.max(1, Math.ceil(M.toolTotal / PAGE));
+  const cur = Math.floor((M.toolOffset || 0) / PAGE) + 1;
+  const rows = M.toolItems.map(t => '<tr>'
+    + '<td><b class="mono" style="font-size:12px">' + fmt.esc(t.name) + '</b>'
+    + (t.stale ? ' <span class="tag warn">缓存超 24h</span>' : '')
+    + '<div class="muted" style="font-size:11.5px">' + fmt.esc((t.title && t.title !== t.name ? t.title + ' · ' : '') + String(t.description || '').slice(0, 120)) + '</div></td>'
+    + '<td class="mono" style="font-size:11px;white-space:nowrap">' + fmt.esc(t.serverName || '') + '</td>'
+    + '<td style="white-space:nowrap"><button class="btn sm" onclick="mcpcToolDetail(' + fmt.attr(t.name) + ', ' + fmt.attr(t.connectorId || '') + ', ' + fmt.attr(t.serverName || '') + ')">详情</button></td>'
+    + '</tr>').join('');
+  const pager = pages > 1
+    ? '<div style="display:flex;gap:8px;align-items:center;justify-content:flex-end;margin-top:10px">'
+      + '<button class="btn sm" ' + ((M.toolOffset || 0) <= 0 ? 'disabled' : '') + ' onclick="mcpcToolPage(-1)">← 上一页</button>'
+      + '<span class="muted" style="font-size:11.5px">第 ' + cur + ' / ' + pages + ' 页 · 共 ' + M.toolTotal + ' 个</span>'
+      + '<button class="btn sm" ' + (cur >= pages ? 'disabled' : '') + ' onclick="mcpcToolPage(1)">下一页 →</button></div>'
+    : '<div class="muted" style="font-size:11.5px;margin-top:8px">共 ' + M.toolTotal + ' 个工具</div>';
+  return bar + '<div class="card"><div style="overflow-x:auto"><table><thead><tr><th>工具</th><th>server</th><th></th></tr></thead><tbody>'
+    + rows + '</tbody></table></div>' + pager + '</div>';
+}
+
+/* ---------- 页签四：本机配置（原 MCP 页内容原样收编） ---------- */
+function mcpcLocalHtml() {
+  return '<div class="card" style="padding:10px 14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
+    + '<span class="muted" style="font-size:12px">这一层是「随 DSH 启动即加载」的 MCP 服务（配置在 <code>cordis.patch.yml</code>），如内置的 GeoScene Pro；与上面的连接器是两套机制，互不影响。</span>'
+    + '<span style="flex:1"></span>'
+    + '<button class="btn sm" onclick="reloadMcp()" title="重新做 TCP 探测 + MCP 握手，成功后自动回写 mcp-tools.json">🔄 重新握手</button>'
+    + '</div>'
+    + (!State.mcp ? '<div class="card mt"><div class="empty"><span class="loading"></span> 正在读取 MCP 配置…</div></div>' : '')
+    + (State.mcp && !State.mcp.length ? '<div class="card mt"><div class="empty">本机配置里没有 MCP 服务</div>' + emptyGuide('mcp') + '</div>' : '')
+    + (State.mcp || []).map(s => {
+      const on = s.online;
+      return `
+    <div class="card mb mt">
       <h3>🔌 ${fmt.esc(s.name)} ${on ? '<span class="tag ok">已连接</span>' : '<span class="tag warn">待接入</span>'}</h3>
       <div class="row c2">
         <div>
@@ -4322,12 +4723,434 @@ Pages.mcp = () => `
         </div>
       </div>
     </div>`;
-  }).join('')}
+    }).join('')
+    + '<div class="card mt"><h3>⚙️ 配置位置</h3>'
+    + '<p class="muted">插件配置：<code>~/.dsh/profiles/web/cordis.patch.yml</code> · 改动后需重启 <code>dsh web</code>（该 profile 的 HMR 已关闭）</p>'
+    + '</div>';
+}
 
-  <div class="card mt">
-    <h3>⚙️ 配置位置</h3>
-    <p class="muted">插件配置：<code>~/.dsh/profiles/web/cordis.patch.yml</code> · 改动后需重启 <code>dsh web</code>（该 profile 的 HMR 已关闭）</p>
-  </div>`;
+/* ---------- 动作：版本 / 目录 / 测活 ---------- */
+async function mcpcCheckUpdate() {
+  UI.info('正在检查 MCP 连接器更新…');
+  const r = await mcpcApi('versionStatus', { force: true });
+  if (r.ok) { State.mcpc.version = r.detail; State.mcpc.versionAt = Date.now(); render({ paintOnly: true }); }
+  mcpcToast(r);
+}
+async function mcpcRefreshCatalog() {
+  UI.info('正在刷新市场目录…');
+  const r = await mcpcApi('refreshCatalog', {});
+  if (!r.ok) return UI.err(r.message);
+  UI.ok(r.message);
+  await mcpcLoadCatalog(true);
+  if (State.mcpc.tab === 'market') render({ paintOnly: true });
+}
+async function mcpcHealthAll() {
+  UI.info('正在对全部连接做健康检查…（HTTP 类连接逐个实测，可能要几秒）');
+  const r = await mcpcApi('healthCheck', {});
+  if (!r.ok) return UI.err(r.message);
+  UI.ok(r.message);
+  await mcpcLoadStatus(true);
+  if (State.mcpc.tab === 'conn') render({ paintOnly: true });
+}
+async function mcpcHealth(key) {
+  const item = (State.mcpc.items || []).find(x => x.key === mcpcArg(key));
+  if (!item) return;
+  UI.info('正在测活 ' + item.name + ' …');
+  const r = await mcpcApi('healthCheck', { connectorId: item.connectorId, connectionKey: mcpcArg(key) });
+  if (!r.ok) return UI.err(r.message);
+  UI.ok(r.message);
+  await mcpcLoadStatus(true);
+  if (State.mcpc.tab === 'conn') render({ paintOnly: true });
+}
+async function mcpcToggle(key, enabled) {
+  const r = await mcpcApi('setEnabled', { key: mcpcArg(key), enabled });
+  if (!r.ok) return UI.err(r.message);
+  UI.ok(r.message);
+  await mcpcLoadStatus(true);
+  render({ paintOnly: true });
+}
+async function mcpcRename(key) {
+  key = mcpcArg(key);
+  const item = (State.mcpc.items || []).find(x => x.key === key);
+  const name = await UI.prompt({ title: '修改显示名', value: item ? item.name : '', multiline: false, okText: '保存',
+    hint: '仅用户自定义 / JSON 导入的连接可改名；市场连接器的名称由目录维护。' });
+  if (name === null || !String(name).trim() || String(name).trim() === (item && item.name)) return;
+  const r = await mcpcApi('renameConnection', { key, name: String(name).trim() });
+  if (!r.ok) return UI.err(r.message);
+  UI.ok(r.message);
+  await mcpcLoadStatus(true);
+  render({ paintOnly: true });
+}
+async function mcpcDisconnect(key) {
+  key = mcpcArg(key);
+  const item = (State.mcpc.items || []).find(x => x.key === key);
+  const ok = await UI.confirm({ title: '断开 MCP 连接', danger: true, okText: '断开',
+    message: '确定断开 <b>' + fmt.esc(item ? item.name : key) + '</b>？<br><span class="muted">连接配置会从本机移除；市场连接器之后可随时重新连接。</span>' });
+  if (!ok) return;
+  const r = await mcpcApi('disconnect', { key });
+  if (!r.ok) return UI.err(r.message);
+  UI.ok(r.message);
+  await mcpcLoadStatus(true);
+  render({ paintOnly: true });
+}
+/** 列出某条连接注入的工具（真实 tools/list，顺带强制刷新缓存） */
+async function mcpcConnTools(key) {
+  key = mcpcArg(key);
+  const item = (State.mcpc.items || []).find(x => x.key === key);
+  if (!item || !item.connectorId) return UI.warn('该连接没有归属连接器，无法列工具');
+  UI.info('正在读取 ' + item.name + ' 的工具清单…（向 server 发一次 tools/list）');
+  const r = await mcpcApi('toolsList', { connectorId: item.connectorId, connectionKey: key });
+  if (!r.ok) return UI.err(r.message);
+  const html = (r.detail.servers || []).map(s =>
+    '<div style="margin-bottom:10px"><span class="tag ' + (s.ok ? 'ok' : 'warn') + '">' + fmt.esc(s.serverName || s.serverKey || '') + '</span> '
+    + '<span class="muted" style="font-size:11px">' + (s.tools || []).length + ' 个工具'
+    + (s.pending ? ' · 正在后台发现' : '') + (s.error ? ' · ' + fmt.esc(s.error) : '') + '</span>'
+    + '<div class="mono" style="font-size:11px;margin-top:4px;word-break:break-all;line-height:1.9">'
+    + ((s.tools || []).map(t => fmt.esc(t.name)).join(' · ') || '—') + '</div></div>').join('');
+  UI.panel({ title: '🧰 ' + item.name + ' · ' + (r.detail.totalTools || 0) + ' 个工具', width: 660,
+    html: html || '<div class="muted">该连接没有可列出的工具</div>' });
+}
+/** 编辑连接配置：插件回给带 "<KEEP>" 保留标记的 JSON，敏感值不回显 */
+async function mcpcEdit(key) {
+  key = mcpcArg(key);
+  const item = (State.mcpc.items || []).find(x => x.key === key);
+  if (!item) return;
+  const cur = await mcpcApi('editableConnectionConfig', { key });
+  if (!cur.ok) return UI.err(cur.message);
+  const json = await UI.prompt({
+    title: '编辑连接配置 · ' + item.name,
+    value: cur.detail.json, multiline: true, okText: '保存并重连',
+    hint: '值为 <code>"&lt;KEEP&gt;"</code> 的字段表示沿用原值（敏感值不会回显，改其他字段时保留即可）；'
+      + '<code>serverName</code> 是连接身份，不能修改 —— 要换请断开重连。',
+  });
+  if (json === null) return;
+  const r = await mcpcApi('reconfigureConnection', { key, json });
+  if (!r.ok) return UI.err(r.message);
+  UI.ok(r.message);
+  await mcpcLoadStatus(true);
+  render({ paintOnly: true });
+}
+/** 导出全部连接的脱敏配置（OAuth 连接需在目标机器重新授权） */
+async function mcpcExport() {
+  const r = await mcpcApi('exportConfig', {});
+  if (!r.ok) return UI.err(r.message);
+  UI.panel({ title: '📤 导出连接配置（已脱敏）', width: 700, hint: fmt.esc(r.message || ''),
+    html: '<pre class="mono" style="font-size:11px;white-space:pre-wrap;max-height:46vh;overflow:auto;background:var(--inset);padding:10px;border-radius:8px">'
+      + fmt.esc(r.detail.json || '') + '</pre>'
+      + '<div style="margin-top:8px"><button class="btn sm" onclick="copyText(' + fmt.attr(r.detail.json || '') + ')">复制 JSON</button>'
+      + '<span class="muted" style="font-size:11px;margin-left:8px">在「添加连接 → 导入 JSON」里粘贴即可在别的机器还原（保留标记需重填真实值）。</span></div>' });
+}
+
+/* ---------- 动作：市场连接 / 详情 ---------- */
+/** 连接一个市场连接器：免凭据直接连；凭据型弹表单；OAuth 交给插件（会拉起授权流程） */
+async function mcpcConnect(id) {
+  id = mcpcArg(id);
+  const d = (State.mcpc.catalog || []).find(x => x.id === id);
+  if (!d) return;
+  if (d.authMode === 'bearer' || d.authMode === 'api-key') return mcpcCredentialDialog(d);
+  UI.info('正在连接 ' + d.name + ' …' + (d.authMode === 'oauth2-pkce' ? '（OAuth 授权可能拉起浏览器登录，请按提示完成）' : ''));
+  const r = await mcpcApi('connect', { connectorId: id });
+  mcpcToast(r);
+  if (r.ok || (r.detail && r.detail.retrying)) {
+    await mcpcLoadStatus(true);
+    if (State.mcpc.tab === 'market') render({ paintOnly: true });
+  }
+}
+/** 连接器详情：描述 / servers / 工具快照 / 提示词示例 / 凭据入口 */
+async function mcpcDetail(id) {
+  id = mcpcArg(id);
+  const d = (State.mcpc.catalog || []).find(x => x.id === id);
+  if (!d) return;
+  const t = await mcpcApi('toolsList', { connectorId: id });
+  const servers = (d.servers || []).map(s => '<tr>'
+    + '<td class="mono" style="font-size:11px">' + fmt.esc(s.serverKey) + '</td>'
+    + '<td>' + fmt.esc(s.transport || 'streamable-http') + '</td>'
+    + '<td class="mono" style="font-size:11px;word-break:break-all">'
+    + fmt.esc(s.transport === 'stdio' ? [s.command].concat(s.args || []).join(' ') : s.url) + '</td></tr>').join('');
+  let toolsSection;
+  if (t.ok) {
+    const srv = t.detail.servers || [];
+    toolsSection = '<h4 style="margin:14px 0 6px">🧰 工具（' + (t.detail.totalTools || 0) + '）'
+      + '<span class="muted" style="font-size:11px;font-weight:400"> 来源：' + fmt.esc(t.detail.source || '—') + '</span></h4>'
+      + srv.map(s => '<div style="margin-bottom:6px"><span class="tag gray">' + fmt.esc(s.serverName || s.serverKey || '') + '</span> '
+        + (s.preview ? '<span class="tag gray">目录预览（未连接）</span>' : '')
+        + '<div class="mono" style="font-size:11px;margin-top:2px;word-break:break-all;line-height:1.9">'
+        + ((s.tools || []).slice(0, 40).map(x => fmt.esc(x.name)).join(' · ') || '—')
+        + ((s.tools || []).length > 40 ? ' …（共 ' + s.tools.length + ' 个）' : '') + '</div></div>').join('');
+  } else {
+    toolsSection = '<div class="muted" style="font-size:12px;margin-top:10px">🧰 工具：' + fmt.esc(t.message || '尚未连接') + '</div>';
+  }
+  const prompts = (d.prompts || []).slice(0, 8).map(p => '<li>' + fmt.esc(p.title || p.text) + '</li>').join('');
+  const credNote = (d.authMode === 'bearer' || d.authMode === 'api-key')
+    ? '<div class="pg-tip" style="margin-top:10px">🔑 该连接器需要凭据（' + fmt.esc(d.credentialDescription || (d.authMode === 'bearer' ? 'Bearer Token' : 'API Key'))
+      + '）：在市场卡片点「连接」填写后即会校验并连接。</div>'
+    : (d.authMode === 'oauth2-pkce' ? '<div class="pg-tip" style="margin-top:10px">🔐 该连接器走 OAuth 登录：点「连接」后按插件拉起的授权页完成登录即可。</div>' : '');
+  UI.panel({ title: fmt.esc(d.name) + (d.featured ? ' ⭐' : ''), width: 700,
+    html: '<div style="font-size:12.5px;line-height:1.8">'
+      + '<p>' + fmt.esc(d.description || d.summary || '') + '</p>'
+      + '<p class="muted" style="font-size:11.5px">厂商 ' + fmt.esc(d.vendor || '—') + ' · 分类 ' + fmt.esc(d.category || '—')
+      + (d.homepage ? ' · <a class="btn sm" href="' + fmt.esc(d.homepage) + '" target="_blank" rel="noreferrer">官网 ↗</a>' : '') + '</p>'
+      + '<h4 style="margin:12px 0 6px">servers</h4>'
+      + '<table><thead><tr><th>serverKey</th><th>传输</th><th>目标</th></tr></thead><tbody>' + (servers || '<tr><td colspan="3" class="muted">无</td></tr>') + '</tbody></table>'
+      + toolsSection
+      + (prompts ? '<h4 style="margin:14px 0 6px">💬 提示词示例</h4><ul class="pg-use" style="font-size:12px">' + prompts + '</ul>' : '')
+      + credNote + '</div>' });
+}
+/** 凭据型连接器的配置表单（bearer / api-key，支持多凭据字段） */
+function mcpcCredentialDialog(d) {
+  const fields = (d.credentialFields && d.credentialFields.length)
+    ? d.credentialFields.map(f => ({ id: 'cf-' + f.key, label: f.label || f.key, ph: f.placeholder || '', type: 'password' }))
+    : (d.authMode === 'bearer'
+      ? [{ id: 'cf-credential', label: 'Bearer Token', ph: d.credentialPlaceholder || '粘贴 Token', type: 'password' }]
+      : [{ id: 'cf-credential', label: 'API Key' + (d.apiKeyHeader ? '（Header: ' + d.apiKeyHeader + '）' : ''), ph: d.credentialPlaceholder || '粘贴 API Key', type: 'password' }]);
+  const mask = document.createElement('div');
+  mask.className = 'modal-mask'; mask.id = 'mcpccred';
+  mask.innerHTML = '<div class="modal" style="width:min(520px,100%)"><h3>🔑 配置凭据 · ' + fmt.esc(d.name) + '</h3>'
+    + '<div class="modal-body">'
+    + (d.credentialDescription ? '<div class="modal-hint">' + fmt.esc(d.credentialDescription) + '</div>' : '')
+    + (d.credentialHelpLabel ? '<div class="modal-hint">' + fmt.esc(d.credentialHelpLabel) + '</div>' : '')
+    + fields.map(f => '<div class="mcpc-frow"><label>' + fmt.esc(f.label) + '</label>'
+      + '<input id="' + f.id + '" type="' + f.type + '" placeholder="' + fmt.esc(f.ph) + '" autocomplete="off"></div>').join('')
+    + '<div class="modal-err" id="mcpccred-err"></div>'
+    + '</div><div class="modal-actions">'
+    + '<button class="btn" onclick="document.getElementById(\'mcpccred\').remove()">取消</button>'
+    + '<button class="btn primary" id="mcpccred-ok">校验并连接</button></div></div>';
+  document.body.appendChild(mask);
+  mask.onclick = (e) => { if (e.target === mask) mask.remove(); };
+  mask.querySelector('#mcpccred-ok').onclick = async () => {
+    const btn = mask.querySelector('#mcpccred-ok');
+    const errEl = mask.querySelector('#mcpccred-err');
+    errEl.textContent = '';
+    const params = { connectorId: d.id };
+    for (const f of fields) {
+      const v = document.getElementById(f.id).value;
+      if (f.id === 'cf-credential') {
+        params.credential = v;
+        if (d.authMode === 'bearer') params.bearerToken = v;
+        if (d.authMode === 'api-key') params.apiKeyValue = v;
+      } else params[f.id.slice(3)] = v;
+    }
+    if (d.authMode === 'api-key' && !params.apiKeyHeader && d.apiKeyHeader) params.apiKeyHeader = d.apiKeyHeader;
+    btn.disabled = true;
+    const r = await mcpcApi('configure', params);
+    if (!r.ok) { errEl.textContent = r.message || '校验失败'; btn.disabled = false; return; }
+    mask.remove();
+    UI.ok(r.message);
+    await mcpcLoadStatus(true);
+    if (routeOf(currentPath()).id === 'mcp') render({ paintOnly: true });
+  };
+}
+
+/* ---------- 动作：工具页签 ---------- */
+let MCPC_TOOL_TIMER = null;
+function mcpcToolDebounce() { clearTimeout(MCPC_TOOL_TIMER); MCPC_TOOL_TIMER = setTimeout(() => mcpcToolBrowse(true), 350); }
+async function mcpcToolBrowse(reset) {
+  const M = State.mcpc;
+  if (reset) M.toolOffset = 0;
+  const r = await mcpcApi('toolExplorer', { query: M.toolQuery || '', connectionKey: M.toolConn || undefined, offset: M.toolOffset || 0, limit: 30 });
+  if (!r.ok) return UI.err(r.message);
+  M.toolItems = r.detail.items || [];
+  M.toolTotal = r.detail.total || 0;
+  M.toolLoaded = true;
+  if (routeOf(currentPath()).id === 'mcp') render({ paintOnly: true });
+}
+function mcpcToolPage(delta) {
+  const M = State.mcpc;
+  M.toolOffset = Math.max(0, (M.toolOffset || 0) + delta * 30);
+  mcpcToolBrowse(false);
+}
+async function mcpcToolDetail(name, connectorId, serverName) {
+  const r = await mcpcApi('toolDetail', { toolName: mcpcArg(name), connectorId: mcpcArg(connectorId) || undefined, serverName: mcpcArg(serverName) || undefined });
+  if (!r.ok) return UI.err(r.message);
+  const t = r.detail.tool || {};
+  UI.panel({ title: '🧰 ' + fmt.esc(t.title || t.name || ''), width: 640,
+    hint: '<span class="mono">' + fmt.esc(t.serverName || '') + '</span>'
+      + (t.stale ? ' <span class="tag warn">缓存超 24h</span>' : '')
+      + '<span class="muted" style="font-size:11px"> · 缓存于 ' + mcpcTime(t.observedAt) + '</span>',
+    html: '<div style="font-size:12.5px;line-height:1.8">'
+      + '<p><b class="mono">' + fmt.esc(t.name || '') + '</b></p>'
+      + '<p>' + fmt.esc(t.description || '（无描述）') + '</p>'
+      + (t.inputSchema ? '<h4 style="margin:12px 0 6px">参数 schema</h4>'
+        + '<pre class="mono" style="font-size:11px;white-space:pre-wrap;max-height:40vh;overflow:auto;background:var(--inset);padding:10px;border-radius:8px">'
+        + fmt.esc(JSON.stringify(t.inputSchema, null, 2)) + '</pre>' : '')
+      + (t.schemaTruncated ? '<div class="muted" style="font-size:11px">（schema 过长被截断）</div>' : '')
+      + '</div>' });
+}
+
+/* ---------- 动作：添加连接（三入口） ---------- */
+function mcpcAddDialog() {
+  if (document.getElementById('mcpcadd')) return;
+  const SAMPLE = JSON.stringify({ mcpServers: {
+    'my-server': { type: 'streamable-http', url: 'https://example.com/mcp', headers: { Authorization: 'Bearer YOUR_ACCESS_TOKEN' } },
+    'local-fs': { type: 'stdio', command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', 'C:/data'] },
+  } }, null, 2);
+  const mask = document.createElement('div');
+  mask.className = 'modal-mask'; mask.id = 'mcpcadd';
+  mask.innerHTML = '<div class="modal" style="width:min(700px,100%)"><h3>➕ 添加 MCP 连接</h3>'
+    + '<div class="modal-body">'
+    + '<div class="mcpc-tabs" style="margin-bottom:12px">'
+    + '<button class="mcpc-tab on" id="mcpcadd-t-json" onclick="mcpcAddPane(\'json\')">导入 JSON</button>'
+    + '<button class="mcpc-tab" id="mcpcadd-t-manual" onclick="mcpcAddPane(\'manual\')">手动配置</button>'
+    + '<button class="mcpc-tab" id="mcpcadd-t-url" onclick="mcpcAddPane(\'url\')">从 URL 安装</button>'
+    + '</div>'
+    /* ① 导入 JSON */
+    + '<div id="mcpcadd-p-json">'
+    + '<textarea id="mcpcadd-json" rows="10" placeholder=\'粘贴 mcpServers JSON（也兼容 {"connections":[…]}）\'></textarea>'
+    + '<div style="display:flex;gap:8px;margin-top:8px;align-items:center;flex-wrap:wrap">'
+    + '<button class="btn sm" onclick="mcpcFormatJson()">格式化</button>'
+    + '<button class="btn sm primary" onclick="mcpcImportJson()">校验并导入</button>'
+    + '<button class="btn sm" onclick="mcpcFillDefault()" title="填入内置默认：GeoScene Pro 本地 MCP（StartGeoSceneMcp）">默认模板：GeoScene Pro</button>'
+    + '<span class="muted" style="font-size:11px">支持 Streamable HTTP、SSE 与 stdio（command/args/env/cwd）；导入即实测校验，失败不保存。</span>'
+    + '</div>'
+    + '<details class="fold mt"><summary>📄 示例</summary><div class="fold-body">'
+    + '<pre class="mono" style="font-size:11px;white-space:pre-wrap">' + fmt.esc(SAMPLE) + '</pre>'
+    + '<button class="btn sm" onclick="mcpcFillSample()">填入示例</button></div></details>'
+    + '</div>'
+    /* ② 手动配置 */
+    + '<div id="mcpcadd-p-manual" style="display:none">' + mcpcManualFormHtml() + '</div>'
+    /* ③ 从 URL 安装 */
+    + '<div id="mcpcadd-p-url" style="display:none">'
+    + '<input id="mcpcadd-url" placeholder="https://…/catalog.json（连接器目录 JSON 的地址）">'
+    + '<div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+    + '<button class="btn sm primary" onclick="mcpcInstallUrl()">安装</button>'
+    + '<span class="muted" style="font-size:11px">从 URL 安装连接器描述；单个免凭据连接器会直接连接，需凭据的会提示补填。</span>'
+    + '</div></div>'
+    + '<div class="modal-err" id="mcpcadd-err" style="margin-top:8px"></div>'
+    + '</div>'
+    + '<div class="modal-actions"><button class="btn" onclick="document.getElementById(\'mcpcadd\').remove()">关闭</button></div>'
+    + '</div>';
+  document.body.appendChild(mask);
+  mask.onclick = (e) => { if (e.target === mask) mask.remove(); };
+  setTimeout(() => { const el = document.getElementById('mcpcadd-json'); if (el) el.focus(); }, 30);
+}
+function mcpcAddPane(p) {
+  for (const k of ['json', 'manual', 'url']) {
+    const pane = document.getElementById('mcpcadd-p-' + k);
+    const tab = document.getElementById('mcpcadd-t-' + k);
+    if (pane) pane.style.display = k === p ? '' : 'none';
+    if (tab) tab.classList.toggle('on', k === p);
+  }
+}
+function mcpcFormatJson() {
+  const el = document.getElementById('mcpcadd-json');
+  const err = document.getElementById('mcpcadd-err');
+  err.textContent = '';
+  try { el.value = JSON.stringify(JSON.parse(el.value), null, 2); } catch (e) { err.textContent = 'JSON 解析失败: ' + e.message; }
+}
+function mcpcFillSample() {
+  const el = document.getElementById('mcpcadd-json');
+  if (el) el.value = JSON.stringify({ mcpServers: {
+    'my-server': { type: 'streamable-http', url: 'https://example.com/mcp', headers: { Authorization: 'Bearer YOUR_ACCESS_TOKEN' } },
+    'local-fs': { type: 'stdio', command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', 'C:/data'] },
+  } }, null, 2);
+}
+/** 填入内置默认本地 MCP 模板（GeoScene Pro，与 DSH「MCP 选项」的 Studio 启动配置一致） */
+function mcpcFillDefault() {
+  const el = document.getElementById('mcpcadd-json');
+  if (el) el.value = MCPC_DEFAULT_LOCAL.json;
+}
+async function mcpcImportJson() {
+  const json = document.getElementById('mcpcadd-json').value;
+  const err = document.getElementById('mcpcadd-err');
+  err.textContent = '';
+  if (!json.trim()) { err.textContent = '请先粘贴 JSON'; return; }
+  UI.info('正在校验并导入…（会对每个 server 实测连通性）');
+  const r = await mcpcApi('importJson', { json });
+  if (!r.ok) { err.textContent = r.message || '导入失败'; return; }
+  document.getElementById('mcpcadd').remove();
+  UI.ok(r.message);
+  await mcpcLoadStatus(true);
+  if (State.mcpc.tab !== 'conn') mcpcTab('conn'); else render({ paintOnly: true });
+}
+async function mcpcInstallUrl() {
+  const url = document.getElementById('mcpcadd-url').value.trim();
+  const err = document.getElementById('mcpcadd-err');
+  err.textContent = '';
+  if (!url) { err.textContent = '请填写目录 JSON 的 URL'; return; }
+  UI.info('正在从 URL 安装连接器…');
+  const r = await mcpcApi('installFromUrl', { url });
+  if (!r.ok) { err.textContent = r.message || '安装失败'; return; }
+  document.getElementById('mcpcadd').remove();
+  UI.ok(r.message);
+  await Promise.all([mcpcLoadCatalog(true), mcpcLoadStatus(true)]);
+  if (State.mcpc.tab !== 'market') mcpcTab('market'); else render({ paintOnly: true });
+}
+function mcpcManualFormHtml() {
+  const row = (id, label, ph, attrs) =>
+    '<div class="mcpc-frow"><label>' + label + '</label><input id="' + id + '" placeholder="' + fmt.esc(ph || '') + '"' + (attrs || '') + '></div>';
+  return '<div class="mcpc-frow"><label>名称 *</label><input id="mcpcadd-name" placeholder="例如：内部知识库 MCP"></div>'
+    + '<div class="mcpc-frow"><label>传输</label><select id="mcpcadd-transport" onchange="mcpcManualTransport(this.value)">'
+    + '<option value="streamable-http">Streamable HTTP / SSE（远程服务）</option>'
+    + '<option value="stdio">stdio（本机命令）</option></select></div>'
+    + '<div id="mcpcadd-grp-http">'
+    + row('mcpcadd-url2', 'URL *', 'https://example.com/mcp')
+    + row('mcpcadd-servername', 'serverName', '留空则从名称自动生成')
+    + '<div class="mcpc-frow"><label>鉴权</label><select id="mcpcadd-authmode" onchange="mcpcManualAuth(this.value)">'
+    + '<option value="none">无鉴权</option><option value="bearer">Bearer Token</option><option value="api-key">API Key</option></select></div>'
+    + '<div id="mcpcadd-grp-bearer" style="display:none">' + row('mcpcadd-bearer', 'Bearer Token *', 'eyJhbGci… / sk-…') + '</div>'
+    + '<div id="mcpcadd-grp-apikey" style="display:none">'
+    + row('mcpcadd-apikeyheader', 'Header 名', 'X-Api-Key（留空用默认）')
+    + row('mcpcadd-apikey', 'API Key *', 'sk-…')
+    + '</div>'
+    + '<div class="mcpc-frow"><label>静态 Headers</label><textarea id="mcpcadd-headers" rows="2" placeholder=\'{"X-Custom":"v"}（JSON 对象，可选）\'></textarea></div>'
+    + '<div class="mcpc-frow"><label></label><label style="font-weight:400;font-size:12px">'
+    + '<input type="checkbox" id="mcpcadd-insecure" style="width:auto"> 允许访问 http:// 私网地址（仅自建服务，勿对公网端点启用）</label></div>'
+    + '</div>'
+    + '<div id="mcpcadd-grp-stdio" style="display:none">'
+    + row('mcpcadd-command', '启动命令 *', 'npx')
+    + row('mcpcadd-args', '参数', '["-y","@modelcontextprotocol/server-filesystem","C:/data"]')
+    + '<div class="mcpc-frow"><label>环境变量</label><textarea id="mcpcadd-env" rows="2" placeholder=\'{"API_KEY":"…"}（JSON 对象，可选）\'></textarea></div>'
+    + row('mcpcadd-cwd', '工作目录', '留空为默认')
+    + '</div>'
+    + '<div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+    + '<button class="btn sm primary" onclick="mcpcManualSubmit()">校验并连接</button>'
+    + '<span class="muted" style="font-size:11px">提交即实测连通性；失败会给出原因，不会保存坏配置。</span></div>';
+}
+function mcpcManualTransport(v) {
+  document.getElementById('mcpcadd-grp-http').style.display = v === 'stdio' ? 'none' : '';
+  document.getElementById('mcpcadd-grp-stdio').style.display = v === 'stdio' ? '' : 'none';
+}
+function mcpcManualAuth(v) {
+  document.getElementById('mcpcadd-grp-bearer').style.display = v === 'bearer' ? '' : 'none';
+  document.getElementById('mcpcadd-grp-apikey').style.display = v === 'api-key' ? '' : 'none';
+}
+async function mcpcManualSubmit() {
+  const g = id => { const el = document.getElementById(id); return el ? el.value.trim() : ''; };
+  const transport = g('mcpcadd-transport');
+  const params = { name: g('mcpcadd-name'), transport, serverName: g('mcpcadd-servername') || undefined };
+  if (!params.name) { document.getElementById('mcpcadd-err').textContent = '名称必填'; return; }
+  if (transport === 'stdio') {
+    params.command = g('mcpcadd-command');
+    if (!params.command) { document.getElementById('mcpcadd-err').textContent = 'stdio 必须填启动命令'; return; }
+    const argsRaw = g('mcpcadd-args');
+    if (argsRaw) {
+      try { const a = JSON.parse(argsRaw); if (!Array.isArray(a)) { document.getElementById('mcpcadd-err').textContent = 'args 必须是 JSON 字符串数组'; return; } params.args = a.map(String); }
+      catch { params.args = argsRaw.split(/\s+/); }   // 允许空格分隔的简写
+    }
+    params.envJson = g('mcpcadd-env') || undefined;
+    params.cwd = g('mcpcadd-cwd') || undefined;
+  } else {
+    params.url = g('mcpcadd-url2');
+    if (!params.url) { document.getElementById('mcpcadd-err').textContent = 'URL 必填'; return; }
+    params.authMode = g('mcpcadd-authmode') || 'none';
+    if (params.authMode === 'bearer') { params.bearerToken = g('mcpcadd-bearer'); if (!params.bearerToken) { document.getElementById('mcpcadd-err').textContent = 'Bearer Token 必填'; return; } }
+    if (params.authMode === 'api-key') {
+      params.apiKeyHeader = g('mcpcadd-apikeyheader') || 'X-Api-Key';
+      params.apiKeyValue = g('mcpcadd-apikey');
+      if (!params.apiKeyValue) { document.getElementById('mcpcadd-err').textContent = 'API Key 必填'; return; }
+    }
+    params.headersJson = g('mcpcadd-headers') || undefined;
+    const ins = document.getElementById('mcpcadd-insecure');
+    if (ins && ins.checked) params.allowInsecurePrivateNetwork = true;
+  }
+  UI.info('正在校验并连接…');
+  const r = await mcpcApi('configure', params);
+  if (!r.ok) return UI.err(r.message);
+  document.getElementById('mcpcadd').remove();
+  UI.ok(r.message);
+  await mcpcLoadStatus(true);
+  if (State.mcpc.tab !== 'conn') mcpcTab('conn'); else render({ paintOnly: true });
+}
 
 
 /* ============ 凭据（credentials.*） ============ */
@@ -9004,6 +9827,7 @@ async function render(opts){
   if (r.id === 'trajectory') jobs.push(loadTrajectory());
   if (r.id === 'deliverables') jobs.push(loadDeliverables());
   if (r.id === 'workflow') jobs.push(loadWorkflowRuns());
+  if (r.id === 'mcp') jobs.push(loadMcpc());   // 连接器插件探测 + 版本/连接清单（市场/工具按页签惰性加载）
   }   // ← paintOnly 时跳过上面整段加载器
   if (jobs.length && !(opts && opts.refreshed)) {
     const done = await Promise.race([
