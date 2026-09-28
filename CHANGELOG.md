@@ -33,6 +33,11 @@
   「添加连接 → 导入 JSON」附默认模板填充；清单中对 GeoScenePro 连接显示「默认」标
   （按 key/名称识别，改名后仍认得出）。添加仍走插件 `importJson`（导入即实测、失败不保存），
   控制台不落第二份配置
+- **README 新增「MCP 连接器（dsh-mcp-connector 插件）」章节**（仿「知识库」一节体例）：
+  插件能力清单、安装命令（`dsh plugin --profile web add dsh-mcp-connector` + 升级与重启须知）、
+  控制台侧零配置的四个页签用法、默认本地 MCP 入口、两套 MCP 机制的关系，
+  附四张界面示例图（`docs/images/mcp-{market,connected,tools,add}.png`，
+  由 `tools/shot-page.mjs` 产出）；顶部画廊与「功能页面」表同步加了入口
 
 ### 修复
 - **知识库集成（第三方插件 dsh-knowledge）**：DSH 装了该插件后，控制台多出

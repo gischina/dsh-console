@@ -21,12 +21,13 @@
 <img width="1910" alt="轨迹 · 会话事件时间线" src="docs/images/trajectory.png" />
 <img width="1910" alt="工作流 · 运行明细与子代理" src="docs/images/workflow.png" />
 <img width="1910" alt="工作空间 · 分组与工作目录" src="docs/images/workspace.png" />
+<img width="1910" alt="MCP 服务 · 连接器市场" src="docs/images/mcp-market.png" />
 <img width="1910" alt="知识库 · dsh-knowledge 插件管理界面" src="docs/images/knowledge.png" />
-<img width="1910" alt="MCP 服务 · GeoScenePro 内置对接" src="docs/images/mcp.png" />
 
 ## 目录
 
 - [内置 GeoScene Pro MCP 对接](#内置-geoscene-pro-mcp-对接)
+- [MCP 连接器（dsh-mcp-connector 插件）](#mcp-连接器dsh-mcp-connector-插件)
 - [知识库（dsh-knowledge 插件）](#知识库dsh-knowledge-插件)
 - [1. 架构与依赖关系](#1-架构与依赖关系)
 - [2. 环境要求](#2-环境要求)
@@ -109,6 +110,80 @@ dsh plugin --profile web add dsh-knowledge
 
 装完**重启 `dsh web`**。插件是否可用以「知识库」页顶部的实时探测为准；
 没装时页面给出引导，不会假装可用。
+
+---
+
+## MCP 连接器（dsh-mcp-connector 插件）
+
+控制台对第三方 MCP 管理插件 **[dsh-mcp-connector](https://github.com/duhu2000/dsh-mcp-connector)**
+做了自适应集成：DSH 那边装了它，控制台侧不加任何配置，「MCP 服务」页就变成完整的
+MCP 连接中心——**市场 / 已连接 / 工具** 三个页签由插件驱动；没装时这三个页签不出现，
+页面给出安装引导，「本机配置」页签照常可用。
+
+**插件提供什么**（本项目不重复实现，只负责接进来）
+
+- 持续更新的连接器市场：111+ 张卡片，覆盖企业数据、金融投资、法律合规、开发工具、
+  办公协作、调研分析、设计创意、效率工具、其他共 9 类（目录走公共 Registry，会持续增长）
+- 多种接入方式：OAuth 2.0 PKCE 授权、API Key / Bearer、Streamable HTTP / stdio、
+  `mcpServers` JSON 导入、从连接器描述 URL 安装
+- 跨连接工具查找：按名称 / 描述搜索全部已启用连接的工具，含易读参数 schema、来源与缓存时间
+- 连接排障：带失败阶段与错误码的可解释诊断、健康检查、重新发现工具
+- 安全生命周期：凭据只存本机、OAuth 自动刷新、脱敏导出、变更前自动快照（可回滚）
+- 作用域与三层治理：project / global 可见范围，Connection / Server / Tool 三级 allow/deny 规则
+
+**安装（DSH 侧，一次性）**
+
+```powershell
+dsh plugin --profile web add dsh-mcp-connector
+```
+
+重复执行同一条命令即可升级。装完（或升级完）**完全重启 `dsh web`**
+（`EADDRINUSE 127.0.0.1:3080` 表示旧进程还在，先停掉再启）。要求 Node.js 20+。
+插件也可用它的安装脚本装，详见[插件仓库 README](https://github.com/duhu2000/dsh-mcp-connector#readme)。
+
+**怎么用（控制台侧，零配置）**
+
+装好插件后打开侧栏「MCP 服务」（`#/mcp/manager`），四个页签：
+
+| 页签 | 干什么 |
+|---|---|
+| **🔗 已连接** | 连接清单与健康状态；每条可 🩺测活 / 🧰列工具（真实 `tools/list`）/ ✏️改名 / ⚙️编辑配置（敏感值以 `<KEEP>` 保留标记沿用，不回显）/ ⏸停用 / ✂️断开 |
+| **🛍️ 市场** | 按分类浏览 + 关键词搜索；免凭据的点「连接」即通，凭据型弹表单填 Token，OAuth 型拉起授权页 |
+| **🧰 工具** | 跨全部连接搜索工具（防抖即时过滤 + 按连接筛选 + 分页），点「详情」看参数 schema |
+| **⚙️ 本机配置** | 随 DSH 启动加载的服务清单（即[内置 GeoScene Pro MCP 对接](#内置-geoscene-pro-mcp-对接)那一套），与连接器互不影响 |
+
+页面上还有：**➕ 添加连接**（导入 JSON / 手动配置 HTTP 与 stdio / 从 URL 安装三个入口）、
+**🩺 全部测活**、**📤 导出脱敏配置**（可搬到别的机器重新导入）、版本横条（插件版本 +
+检查更新）。插件状态有 SSE 实时推送，连接变更时页面自动刷新。
+
+<img width="1910" alt="MCP 服务 · 已连接与健康管理" src="docs/images/mcp-connected.png" />
+<img width="1910" alt="MCP 服务 · 跨连接工具搜索" src="docs/images/mcp-tools.png" />
+<img width="1910" alt="MCP 服务 · 添加连接（三个入口）" src="docs/images/mcp-add.png" />
+
+**内置默认本地 MCP（GeoScene Pro）**
+
+页面内置了与 DSH「MCP 选项 → Studio 连接配置方式」一致的默认模板
+`{"mcpServers":{"GeoScenePro":{"command":"StartGeoSceneMcp"}}}`：没有任何连接时，
+空状态第一个按钮就是「🏠 启用默认本地 MCP」一键加上；「添加连接 → 导入 JSON」里也有
+默认模板可填充；清单中该连接带「默认」标。实际添加仍走插件的 `importJson`
+（导入即实测连通性，失败不保存），控制台不落第二份配置。
+
+**控制台做了什么**
+
+- `server.cjs` 铺一组 `/api/mcpc*` 通道：`POST /api/mcpc` 等价转发插件白名单 API
+  （不设超时，OAuth 授权要等人操作）、`/api/mcpc-status` 可用性探测、
+  `/api/mcpc-ui/*` 市场卡片图标代理、`/api/mcpc-events` SSE 状态流直通——
+  与 `/api/kb/*` 同一思路：控制台只铺通道与外壳，数据全部来自本机已装插件，不落第二份拷贝
+- 页面外壳（四个页签、表单、清单）由控制台实现，但连接的增删改测全部调插件自己的后端，
+  与插件在 DSH 侧的会话状态、工具治理天然一致
+
+**两套 MCP 机制的关系**：「本机配置」页签 = 随 DSH 启动从 `cordis.patch.yml` 加载的服务
+（改配置要重启 `dsh web`）；「市场 / 已连接 / 工具」= 插件热管理的连接（免重启、即配即测）。
+两者注入的工具都以 `mcp__<serverName>__*` 前缀提供给模型，互不干扰。
+
+> ⚠️ stdio 类连接（如 GeoScenePro）依赖被拉起的本机程序：GeoScene Pro 没启动时，
+> `StartGeoSceneMcp` 会判断「Pro 未启动」，连接状态显示「未知/待恢复」——
+> 那是真实结果，不是故障；把 GeoScene Pro 打开后点「🩺 测活」即可恢复。
 
 ---
 
@@ -555,7 +630,7 @@ dsh-console/
 | 大模型 | `#/model` | `llm/listConfigurableProviders` / `session/modelCatalog` / `llm/discoverModels` / `session/selectModel` |
 | 智能体预设 | `#/agent/manage` | `agentPresets/list / read / select / copy / deletePreset` + `settings/openAgentPresetDirectory` |
 | Skills 管理 | `#/skills/manager` | 扫描 4 个技能根目录（项目 `.dsh/skills`、项目 `.agents/skills`、用户 `~/.dsh/skills`、用户 `~/.agents/skills`），解析 `SKILL.md` frontmatter |
-| MCP 服务 | `#/mcp/manager` | 读 `cordis.patch.yml` + 交叉验证插件树 + TCP 探测 `127.0.0.1:11000` + 真实 MCP 握手 |
+| MCP 服务 | `#/mcp/manager` | 四页签：**已连接 / 市场 / 工具**（来自 dsh-mcp-connector 插件，经 `/api/mcpc` 通道：市场一键连接、连接管理、测活、JSON/手动/URL 三入口添加、跨连接工具搜索；插件未装时显示引导）+ **本机配置**（读 `cordis.patch.yml` + 交叉验证插件树 + TCP 探测 `127.0.0.1:11000` + 真实 MCP 握手）——见[「MCP 连接器（dsh-mcp-connector 插件）」](#mcp-连接器dsh-mcp-connector-插件)一节 |
 | 插件 | `#/plugin/manager` | `dsh --profile web --dump-config` 解析插件树（规模随部署而变）+ **动态插件清单** `dynamicCordisRunner/inventory`（只读）+ `pluginInventory/list` 运行时清单（含 fiber 阶段）——两个清单的规模都随 DSH 版本变，别当常量 |
 | 知识库 | `#/knowledge` | 装了 `dsh-knowledge` 插件才可用；装载插件自带的库 / 文档 / 检索管理界面，数据走 `/api/kb/*` 通道（见[「知识库（dsh-knowledge 插件）」](#知识库dsh-knowledge-插件)一节） |
 
