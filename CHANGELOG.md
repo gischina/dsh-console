@@ -9,6 +9,29 @@
 ## [Unreleased]
 
 ### 新增
+- **Skills 管理页接入技能管理插件（@weibaohui/skills-management）**：页面改为四个页签
+  「📦 已安装 / 🛍️ 市场 / 🗂️ 执行器 / ⚙️ 本机配置」——
+  - **已安装**：DSH 用户库（`~/.dsh/skills`）技能清单，每张卡标注 ≈token 注入开销、
+    文件数 / 体积、修改时间；详情弹窗含 SKILL.md 元数据 + 正文预览 + 依赖文件清单
+  - **市场**：插件内置 ntd 技能市场（6400+）按来源（47 个）过滤 + 关键词搜索、分段渲染；
+    一键安装（已存在时确认后覆盖）；顶部横条显示市场仓库状态（地址 / 分支 / 是否落后 /
+    上次同步）并可手动同步
+  - **执行器**：本机 17 个 coding agent 技能目录汇总（可自定义），点行下钻看全量技能，
+    其他执行器的技能一键「收编到 DSH」，dsh / agents 根内可切「模型可调用」
+    （写 dsh 原生 `disable-model-invocation` frontmatter 键）
+  - 插件未安装时前三个页签不出现、给出安装引导（探测依据
+    `GET /skills-management/api/market/status`），「本机配置」（原整页内容）照常可用
+- `server.cjs` 新增 Skills 管理通道：`/api/skmg/<子路径>` 等价转发插件 API
+  （GET/POST/PUT/DELETE 原样透传、query 与 JSON 体带过去、不设超时、401 就地重认证）、
+  `GET /api/skmg-status` 可用性探测 —— 与 `/api/mcpc`、`/api/kb/*` 同一思路：
+  控制台只铺通道与外壳，数据全部来自本机已装插件，不落第二份拷贝
+- 「系统状态 → 全模块自检」新增 Skills 管理插件检查项（标 `opt`：未安装只提示不判死）
+- **README 新增「Skills 管理（@weibaohui/skills-management 插件）」章节**
+  （仿 MCP 连接器一节体例）：插件能力清单、安装方式（插件市场或
+  `dsh plugin --profile web add @weibaohui/skills-management`）、四个页签用法、
+  与「本机配置」的关系，附三张界面示例图
+  （`docs/images/skills-{market,manager,executors}.png`）；顶部画廊、「功能页面」表、
+  「控制台自有接口」表同步加了入口
 - **MCP 服务页接入 MCP 连接器（dsh-mcp-connector 插件）**：页面改为四个页签
   「🔗 已连接 / 🛍️ 市场 / 🧰 工具 / ⚙️ 本机配置」——
   - **市场**：连接器目录按分类浏览 + 关键词搜索（卡片带图标、鉴权方式、连接状态；

@@ -31,6 +31,7 @@ for (const a of process.argv.slice(2)) {
   else if ((m = a.match(/^--wait=(\d+)$/))) wait = Number(m[1]);
   else if ((m = a.match(/^--click=(.+)$/))) jobs[jobs.length - 1].click = m[1];
   else if ((m = a.match(/^--clickwait=(\d+)$/))) jobs[jobs.length - 1].clickwait = Number(m[1]);
+  else if ((m = a.match(/^--js=(.+)$/))) { const j = jobs[jobs.length - 1]; (j.jsList = j.jsList || []).push(m[1]); }   // 截图前直接在页面里执行 JS（可多次出现按序执行；比 --click 精确，适合 tab 切换这类按文本匹配会点错的场景）
   else if ((m = a.match(/^--theme=(\w+)$/))) theme = m[1];
 }
 if (!jobs.length || jobs.some(j => !j.route || !j.out)) {
@@ -101,6 +102,13 @@ try {
     })()`);
     console.log(j.out, JSON.stringify(info));
 
+    // 可选：截图前在页面里直接执行若干段 JS（--js 可多次出现按序执行，每段后等 clickwait）
+    for (const expr of j.jsList || []) {
+      const out = await ev(expr);
+      console.log('js:', JSON.stringify(out).slice(0, 120));
+      await sleep(j.clickwait || 4000);
+    }
+
     // 可选：截图前点一下页面里的元素（按可见文本匹配，比如选中某个知识库），让截图带真实内容
     if (j.click) {
       const hit = await ev(`(() => {
@@ -125,7 +133,9 @@ try {
       await sleep(j.clickwait || 4000);
     }
 
-    const full = Math.max(height, Math.min(6000, (info.scrollH || height) + 8));
+    // 截图高度现算：click/js 步骤可能展开内容（如下钻面板），别用页面加载时的旧 scrollH
+    const h2 = await ev(`document.documentElement.scrollHeight`);
+    const full = Math.max(height, Math.min(9000, (h2 || info.scrollH || height) + 8));
     await send('Emulation.setDeviceMetricsOverride', { width, height: full, deviceScaleFactor: 2, mobile: false });
     await sleep(1200);
     const shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true });

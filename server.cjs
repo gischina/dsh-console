@@ -1312,6 +1312,63 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  /* ============ Skills 管理通道（@weibaohui/skills-management 插件）============
+     插件在 DSH 侧挂了一个同源前缀 /skills-management/api（GET/POST/PUT/DELETE，
+     子路径+query 语义，体是 JSON），没有 SSE、没有需要代理的静态资源。
+     控制台对它做**等价转发**（与 /api/mcpc 同一思路）：
+       · /api/skmg-status → 探测插件是否已挂载（GET /skills-management/api/market/status；
+         200=已装、404=未装，其余视为主机/鉴权问题）
+       · /api/skmg/<子路径>?<query> → /skills-management/api/<子路径>?<query>
+         方法原样透传（GET/POST/PUT/DELETE），体原样转发。
+         market/sync 是 git 拉取整库（分钟级）、share/run 是无头 agent 运行 —— 都不设超时。
+     为什么走通道：插件的信任 fence 校验 Host/Origin，服务端转发（无浏览器 Origin）天然满足；
+     令牌过期 401 时就地重换会话 cookie 再重发（与 /api/mcpc 同策略）。
+     插件没装时 /skills-management/* 在 DSH 上是 404：/api/skmg-status 据此给出明确的
+     unavailable，前端显示安装引导而不是假故障。 */
+  if (pathname === '/api/skmg-status') {
+    let ok = false, unavailable = false, httpStatus = 0, error = '';
+    try {
+      const r = await fetch(DSH + '/skills-management/api/market/status', { headers: authHeaders(), signal: AbortSignal.timeout(4000) });
+      httpStatus = r.status;
+      ok = r.status === 200;
+      unavailable = r.status === 404;   // DSH 活着但插件没挂载
+    } catch (e) { error = e.message; }
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+    return void res.end(JSON.stringify({ available: ok, unavailable, httpStatus, origin: DSH, at: new Date().toISOString(), ...(error ? { error } : {}) }));
+  }
+  if (pathname.startsWith('/api/skmg/') || pathname === '/api/skmg') {
+    const sub = pathname.slice('/api/skmg'.length) || '/';
+    const search = url.search;
+    const body = [];
+    for await (const c of req) body.push(c);
+    const ac = new AbortController();
+    const onClose = () => { if (!res.writableEnded) ac.abort(); };
+    res.on('close', onClose);
+    const send = () => fetch(DSH + '/skills-management/api' + sub + search, {
+      method: req.method,
+      headers: { ...(body.length ? { 'content-type': 'application/json' } : {}), ...authHeaders() },
+      body: ['GET', 'HEAD'].includes(req.method) ? undefined : Buffer.concat(body),
+      signal: ac.signal,
+    });
+    try {
+      let up = await send();
+      if (up.status === 401 && DSH_TOKEN) {
+        const again = await ensureDshAuth(true);
+        if (again.ok) up = await send();
+      }
+      const buf = Buffer.from(await up.arrayBuffer());
+      res.writeHead(up.status, { 'content-type': up.headers.get('content-type') || 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      res.end(buf);
+    } catch (e) {
+      if (ac.signal.aborted) return;
+      res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'DSH 主机不可达: ' + e.message + '（目标 ' + DSH + '）' }));
+    } finally {
+      res.off('close', onClose);
+    }
+    return;
+  }
+
   // 本地接口（不转发给 DSH）
   /* DSH 目标配置：地址 + 令牌。
      GET  → 当前状态（是否已配置、是否已认证、失败原因）

@@ -546,6 +546,9 @@ const State = { sessionId: null, sessions: [], host: null, skills: [], presets: 
                 mcpc: { available: null, probeAt: 0, tab: 'conn', version: null, versionAt: 0,
                         items: null, statusAt: 0, catalog: null, catalogAt: 0, cat: '', kw: '',
                         toolQuery: '', toolConn: '', toolItems: null, toolTotal: 0, toolOffset: 0, toolLoaded: false },
+                skmg: { available: null, unavailable: false, probeAt: 0, tab: 'installed',
+                        list: null, listAt: 0, kw: '', src: '', limit: 60,
+                        execs: null, execsAt: 0, drill: '', drillData: null, mkt: null, mktAt: 0 },
                 ftree: { scopeSession: null, dirs: {}, expanded: {}, preview: null, error: null } };
 
 /** 是否子代理会话（origin 由 session/list 返回：'user' | 'subagent' | …） */
@@ -2630,15 +2633,17 @@ const PAGE_HELP = {
     tip: '系统智能体预设（<code>trust:\'system\'</code>）随部署发布、只读：不能改名 / 删除 / 在编辑器中打开，要定制请先「复制」。',
   },
   skillMgr: {
-    what: 'Skills（技能）清单与加载根目录。技能按作用域分层加载，近层覆盖远层（项目级 > 用户级）。',
-    src: '<code>skills/list</code>（按当前会话工作目录解析）+ 本机 <code>/api/local/skills</code>（根目录与存在性）',
+    what: 'Skills（技能）管理中心：市场一键安装、DSH 用户库管理、本机全部 coding agent 技能目录一览与收编，外加按会话作用域的加载根目录。',
+    src: 'Skills 管理插件 <code>/skills-management/api</code>（清单 / 执行器 / install / invocation / market 同步，经 <code>/api/skmg</code> 等价转发，插件没装时给安装引导）+ 会话 <code>skills/list</code> + 本机 <code>/api/local/skills</code>',
     use: [
-      '每个技能卡显示它来自哪一层、文件路径与字节数 —— 判断"加载的是我改的那份吗"看路径。',
-      '项目级根的基准是**当前会话的工作目录**：换会话就换作用域，页面顶部已标出当前 cwd。',
-      '加技能 = 往对应根目录放技能目录（含 SKILL.md），然后刷新本页重扫。',
+      '「📦 已安装」= DSH 用户库（<code>~/.dsh/skills</code>）：skill 工具能调到的技能就在这里，每张卡标注 ≈token 注入开销。',
+      '「🛍️ 市场」= 插件内置的 ntd 技能市场（6600+）：按来源 / 关键词过滤，点「安装」一键装入用户库；顶栏「🔄 同步市场」拉最新。',
+      '「🗂️ 执行器」= 本机十几个 coding agent 的技能目录扫描：点行下钻，把 Claude Code / CodeBuddy / WorkBuddy 等的技能「收编到 DSH」。',
+      '「禁止模型调用」写的是 dsh 原生 frontmatter 键 <code>disable-model-invocation</code>：用户还能手动 /slash 调用，只是不再自动注入模型。',
+      '「⚙️ 本机配置」= 原先整页的内容：按当前会话 cwd 解析加载根目录、列出会话里实际加载的技能。',
     ],
-    go: ['chat', 'workspace', 'settings'],
-    tip: '根目录显示「未创建」是正常的：DSH 不会自动建目录，放进去后才会出现技能。',
+    go: ['chat', 'mcp', 'workspace'],
+    tip: '安装 / 收编即装即用（DSH 的技能加载有 watcher，不用重启）；从市场安装的技能先看「详情」里的 whenToUse 再决定。',
   },
   mcp: {
     what: 'MCP 连接中心：市场一键连接、已连接清单与健康检查、跨连接工具搜索，外加本机 cordis.patch.yml 配置的服务清单。',
@@ -2946,8 +2951,9 @@ const EMPTY_GUIDE = {
   skillMgr: {
     title: '怎么让技能出现在这里',
     steps: [
-      '技能靠目录约定加载，不靠对话创建：把技能目录（含 SKILL.md）放进下面列出的某个根目录。',
-      '项目级根的基准是**当前会话的工作目录**；放好后刷新本页即会重扫。',
+      '**最快**：装 Skills 管理插件（DSH 插件市场搜 <code>skills-management</code>，或 <code>dsh plugin --profile web add @weibaohui/skills-management</code>，重启 <code>dsh web</code>），本页「市场」页签 6600+ 技能一键安装。',
+      '不想装插件也可以：把技能目录（含 SKILL.md）放进某个加载根目录，刷新后即会重扫。',
+      '已有 Claude Code / CodeBuddy 等执行器的技能？装插件后到「执行器」页签一键「收编到 DSH」。',
     ],
   },
   mcp: {
@@ -3136,6 +3142,13 @@ const PAGE_CHECKS = {
       }, want: v => v.msg },
   ],
   skillMgr: [
+    { name: 'Skills 管理插件（市场 / 执行器）', opt: true, fn: async () => {
+        const p = await (await fetch('/api/skmg-status')).json();
+        if (!p.available) throw new Error('未安装 @weibaohui/skills-management（可选插件）');
+        const r = await skmgApi('GET', '');
+        if (r.error) throw new Error(r.error);
+        return r;
+      }, want: r => '市场 ' + (r.market || []).length + ' · 已装 ' + (r.installed || []).length + ' · 来源 ' + (r.sources || []).length },
     { name: '技能清单 skills/list', fn: () => API.call('skill.list', { sessionId: State.sessionId }),
       want: v => (v.skills || []).length + ' 个技能' },
     { name: '技能根目录（本机扫描）', fn: async () => {
@@ -3884,23 +3897,381 @@ function scopeBadge(scope) {
   return `<span class="tag ${s.tag}" style="font-size:10.5px">${s.ico} ${s.name}</span>`;
 }
 
+/* ============ Skills 管理页（能力与资产）============
+   与「MCP 服务」同构：真正的市场 / 一键安装 / 执行器收编 / 治理由 DSH 侧第三方插件
+   @weibaohui/skills-management 提供（内置 ntd 技能市场 + 本机全部 coding agent
+   执行器目录扫描），控制台通过 /api/skmg 通道做**等价转发**：
+     GET    /api/skmg             → 清单（市场全部技能 + DSH 用户库已装，含 ≈token 开销）
+     GET    /api/skmg/executors   → 执行器目录汇总（?mode=summary）/ 单执行器技能明细（?executor=）
+     POST   /api/skmg/install     → 一键安装（市场 → DSH 用户库，或从其他执行器收编）
+     DELETE /api/skmg             → 删除技能
+     PUT    /api/skmg/invocation  → 模型可调用开关（写 dsh 原生 frontmatter 键）
+     GET/POST /api/skmg/market/*  → 市场仓库状态 / 同步
+   控制台不自存任何技能数据；插件没装时显示安装引导，「本机配置」页签照常可用。 */
+
+/* ---------- 插件 API 访问 ---------- */
+/** 打一个技能管理插件的子路径。返回插件 JSON；
+ *  网络层 / 非 JSON 响应折算成 {error}，调用方只需要看 error 有无。 */
+async function skmgApi(method, sub, body) {
+  let r;
+  try {
+    r = await fetch('/api/skmg' + (sub || ''), { method,
+      headers: body !== undefined ? { 'content-type': 'application/json' } : {},
+      body: body !== undefined ? JSON.stringify(body) : undefined });
+  } catch (e) { return { error: '无法连接控制台后端: ' + e.message }; }
+  try { return await r.json(); }
+  catch { return { error: '插件接口返回异常（HTTP ' + r.status + '）' }; }
+}
+function skmgSize(n) { return n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : n >= 1024 ? (n / 1024).toFixed(1) + ' KB' : (n || 0) + ' B'; }
+function skmgTime(ts) { return ts ? new Date(ts).toLocaleString('zh-CN', { hour12: false }) : '—'; }
+
+/* ---------- 加载器（带 TTL；paintOnly 重绘不重跑） ---------- */
+const SKMG_LIST_TTL = 60000;   // 市场+已装清单：1min（全市场 6600+ 条，插件每次全量扫盘，别频繁打）
+const SKMG_EXEC_TTL = 30000;   // 执行器汇总：30s
+const SKMG_MKT_TTL = 15000;    // 市场仓库状态：15s
+function skmgFresh(at, ttl) { return at && Date.now() - at < ttl; }
+
+/** Skills 页加载器：探测插件可用性 → 清单（+ 当前页签的数据）。
+ *  返回 true 让 render() 在数据到手后重绘一次。 */
+async function loadSkmg(force) {
+  const M = State.skmg;
+  if (M.available === null || force || !skmgFresh(M.probeAt, 30000)) {
+    try { const p = await (await fetch('/api/skmg-status')).json(); M.available = !!p.available; M.unavailable = !!p.unavailable; }
+    catch { M.available = false; }
+    M.probeAt = Date.now();
+  }
+  if (!M.available) return true;
+  await Promise.all([
+    skmgLoadList(force),
+    M.tab === 'exec' ? skmgLoadExecs(force) : Promise.resolve(),
+    M.tab === 'market' ? skmgLoadMarket(force) : Promise.resolve(),
+  ]);
+  return true;
+}
+async function skmgLoadList(force) {
+  const M = State.skmg;
+  if (!force && M.list && skmgFresh(M.listAt, SKMG_LIST_TTL)) return;
+  const r = await skmgApi('GET', '');
+  if (!r.error) { M.list = r; M.listAt = Date.now(); }
+}
+async function skmgLoadExecs(force) {
+  const M = State.skmg;
+  if (!force && M.execs && skmgFresh(M.execsAt, SKMG_EXEC_TTL)) return;
+  const r = await skmgApi('GET', '/executors?mode=summary');
+  if (!r.error) { M.execs = r.executors || []; M.execsAt = Date.now(); }
+}
+async function skmgLoadMarket(force) {
+  const M = State.skmg;
+  if (!force && M.mkt && skmgFresh(M.mktAt, SKMG_MKT_TTL)) return;
+  const r = await skmgApi('GET', '/market/status');
+  if (!r.error) { M.mkt = r; M.mktAt = Date.now(); }
+}
+/** 执行器下钻：点行展开该执行器的技能全列（再次点击收起）。paintOnly 不跑
+ *  加载器，数据到手后局部重绘在这里补。 */
+async function skmgDrill(key) {
+  const M = State.skmg;
+  M.drill = (M.drill === key) ? '' : key;
+  render({ paintOnly: true });
+  if (M.drill) await skmgDrillLoad();
+}
+async function skmgDrillLoad() {
+  const M = State.skmg;
+  M.drillData = null;
+  render({ paintOnly: true });
+  const r = await skmgApi('GET', '/executors?executor=' + encodeURIComponent(M.drill));
+  if (!r.error) M.drillData = r.executor;
+  else UI.err(r.error);
+  render({ paintOnly: true });
+}
+
+/* ---------- 动作 ---------- */
+/** 一键安装：市场 → DSH 用户库（from=执行器 key 时是「收编」）。
+ *  已存在时插件报错，确认后带 overwrite 覆盖安装。 */
+async function skmgInstall(name, from) {
+  UI.info('正在安装「' + name + '」…');
+  let r = await skmgApi('POST', '/install', { name, from: from || 'market' });
+  if (r.error && /exist|存在/i.test(r.error)) {
+    const ov = await UI.confirm({ title: '覆盖安装', danger: true, okText: '覆盖',
+      message: '「' + name + '」已存在于 DSH 用户库，覆盖安装会替换旧目录。继续？' });
+    if (!ov) return;
+    r = await skmgApi('POST', '/install', { name, from: from || 'market', overwrite: true });
+  }
+  if (r.error) { UI.err(r.error); return; }
+  UI.ok('「' + name + '」已装入 DSH 用户库（~/.dsh/skills），skill 工具立即可用');
+  await skmgLoadList(true);
+  render({ paintOnly: true });
+}
+async function skmgDelete(name, executor) {
+  const ok = await UI.confirm({ title: '删除技能', danger: true, okText: '删除',
+    message: '确定删除技能「' + name + '」' + (executor ? '（来自执行器 ' + executor + '）' : '') + '？目录会一并移除，不可恢复。' });
+  if (!ok) return;
+  const r = await skmgApi('DELETE', '', { name, executor: executor || undefined });
+  if (r.error) { UI.err(r.error); return; }
+  UI.ok('已删除「' + name + '」');
+  await Promise.all([skmgLoadList(true),
+    State.skmg.drill ? skmgDrillLoad() : Promise.resolve()]);
+  render({ paintOnly: true });
+}
+/** 模型可调用开关：写的是 dsh 原生 frontmatter 键 disable-model-invocation。
+ *  只对 DSH 用户库 / ~/.agents/skills 里的技能有效（插件按这两个根解析）。 */
+async function skmgToggleInv(name, val) {
+  const r = await skmgApi('PUT', '/invocation', { name, modelInvocable: !!val });
+  if (r.error) { UI.err(r.error); return; }
+  UI.ok('「' + name + '」模型可调用已' + (val ? '开启' : '关闭'));
+  if (State.skmg.drill) await skmgDrillLoad();
+  render({ paintOnly: true });
+}
+async function skmgMarketSync() {
+  UI.info('正在同步技能市场（git 拉取整库，可能要一两分钟）…');
+  const r = await skmgApi('POST', '/market/sync');
+  if (r.error) { UI.err(r.error); return; }
+  UI.ok('技能市场同步完成');
+  await Promise.all([skmgLoadList(true), skmgLoadMarket(true)]);
+  render({ paintOnly: true });
+}
+
+/* ---------- 页面 ---------- */
+/** 切页签：先 paintOnly 画骨架，再按页签**惰性触发数据加载**
+ *  （⚠️ paintOnly 的 render() 不跑加载器，数据到手后局部重绘在这里补）。 */
+function skmgTab(t) {
+  State.skmg.tab = t;
+  render({ paintOnly: true });
+  if (t === 'exec') skmgLoadExecs().then(() => render({ paintOnly: true }));
+  if (t === 'market') skmgLoadMarket().then(() => render({ paintOnly: true }));
+  if (t === 'installed' || t === 'market') skmgLoadList().then(() => render({ paintOnly: true }));
+}
+
 Pages.skillMgr = () => {
+  const M = State.skmg;
+  const localCount = State.skillsScope ? (State.skillsScope.skills || []).length : null;
+  let body;
+  if (M.available === null) {
+    body = '<div class="card"><div class="empty"><span class="loading"></span> 正在探测 Skills 管理插件…</div></div>';
+  } else if (!M.available) {
+    body = skmgUnavailableHtml();
+  } else {
+    const tab = (t, label, n) => '<button class="mcpc-tab' + (M.tab === t ? ' on' : '') + '" onclick="skmgTab(' + fmt.attr(t) + ')">' + label
+      + (n != null ? ' <span class="mcpc-n">' + n + '</span>' : '') + '</button>';
+    body = '<div class="mcpc-tabs">'
+      + tab('installed', '📦 已安装', M.list ? (M.list.installed || []).length : null)
+      + tab('market', '🛍️ 市场', M.list ? (M.list.market || []).length : null)
+      + tab('exec', '🗂️ 执行器', M.execs ? M.execs.length : null)
+      + tab('local', '⚙️ 本机配置', localCount)
+      + '</div>'
+      + (M.tab === 'installed' ? skmgInstalledHtml()
+        : M.tab === 'market' ? skmgMarketHtml()
+        : M.tab === 'exec' ? skmgExecHtml()
+        : skmgLocalHtml());
+  }
+  return `
+  <div class="page-title"><h2>Skills 管理</h2>
+    <span class="sub">市场一键安装 · DSH 用户库管理 · 本机全部执行器收编${scopeTag('cwd')}</span>
+    <span class="pt-actions">
+      ${M.available ? '<button class="btn sm" onclick="skmgMarketSync()" title="git 拉取最新技能市场（ntd 6600+ 技能，每日自动同步）">🔄 同步市场</button>' : ''}
+      <button class="btn sm" onclick="reloadSkillsScope()" title="按当前会话工作目录重新扫描技能根目录">🔄 重扫本机</button>
+    </span>
+  </div>
+  ${crumbOf('skillMgr')}
+  ${pageHelp('skillMgr')}
+  ${body}`;
+};
+
+/** 插件未安装时的引导卡 + 仍可用的本机配置 */
+function skmgUnavailableHtml() {
+  return '<div class="card">'
+    + '<h3>🧩 Skills 管理插件未安装</h3>'
+    + '<p class="muted" style="margin-top:6px">「市场 / 一键安装 / 执行器收编」由 DSH 侧的第三方插件 '
+    + '<code>@weibaohui/skills-management</code> 提供（<a href="https://github.com/weibaohui/skills-management" target="_blank" rel="noreferrer">github.com/weibaohui/skills-management ↗</a>）：'
+    + '一个页面管理本机所有 coding agent 的技能，一键收编进 DSH 用户库；内置 6600+ ntd 技能市场，支持注入开销（≈token）统计与模型可见性治理。</p>'
+    + '<p style="font-size:12.5px;margin-top:8px">安装：在 DSH 插件市场搜 <code>skills-management</code>，或终端执行 '
+    + '<code>dsh plugin --profile web add @weibaohui/skills-management</code>（语法以 <code>dsh plugin --help</code> 为准），装完重启 <code>dsh web</code>。</p>'
+    + '<div class="pg-tip" style="margin-top:8px">ℹ️ 探测依据：<code>GET /skills-management/api/market/status</code> 是否返回 200 —— '
+    + '这是真实结果，不是故障。下方的「本机配置」不依赖插件，照常可用。</div>'
+    + '<div style="margin-top:12px"><button class="btn" onclick="loadSkmg(true).then(()=>render({refreshed:true}))">🔄 重新探测</button></div>'
+    + '</div>' + skmgLocalHtml();
+}
+
+/** 页签一：已安装（DSH 用户库 ~/.dsh/skills） */
+function skmgInstalledHtml() {
+  const M = State.skmg;
+  if (!M.list) return '<div class="card"><div class="empty"><span class="loading"></span> 正在读取已装清单…</div></div>';
+  const list = M.list.installed || [];
+  if (!list.length) {
+    return '<div class="card"><div class="empty">DSH 用户库（~/.dsh/skills）还没有技能。<br>'
+      + '<span class="muted" style="font-size:12px">从市场一键安装，或把其他执行器（Claude Code / CodeBuddy / WorkBuddy…）的技能「收编」进来。</span></div>'
+      + '<div style="text-align:center;margin:14px 0 6px">'
+      + '<button class="btn primary" onclick="skmgTab(\'market\')">🛍️ 去市场逛逛</button> '
+      + '<button class="btn" onclick="skmgTab(\'exec\')">🗂️ 看看本机执行器</button></div></div>';
+  }
+  return '<div class="mcpc-grid">' + list.map(s => '<div class="card mcpc-card">'
+    + '<div style="display:flex;gap:10px;align-items:flex-start"><div class="mcpc-ico mcpc-ico-ph">📦</div>'
+    + '<div style="flex:1;min-width:0"><b>' + fmt.esc(s.name) + '</b>'
+    + '<div class="muted mono" style="font-size:10.5px;word-break:break-all">' + fmt.esc(s.path || '') + '</div></div></div>'
+    + '<p style="font-size:12px;margin:8px 0 6px">' + fmt.esc(s.description || '—') + '</p>'
+    + '<div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center">'
+    + '<span class="tag gray">≈ ' + (s.tokens != null ? s.tokens + ' tok' : (s.chars || 0) + ' 字符') + '</span>'
+    + '<span class="tag gray">' + (s.fileCount || '?') + ' 个文件 · ' + skmgSize(s.totalSize) + '</span>'
+    + (s.modifiedAt ? '<span class="tag gray">改于 ' + skmgTime(s.modifiedAt) + '</span>' : '')
+    + '</div>'
+    + '<div style="display:flex;gap:6px;margin-top:10px;justify-content:flex-end">'
+    + '<button class="btn sm" onclick="skmgDetail(' + fmt.attr(s.name) + ')">详情</button>'
+    + '<button class="btn sm danger" onclick="skmgDelete(' + fmt.attr(s.name) + ')">删除</button>'
+    + '</div></div>').join('') + '</div>';
+}
+
+/** 页签二：市场（ntd 6600+ 技能；来源过滤 + 关键词搜索 + 分段渲染） */
+function skmgMarketHtml() {
+  const M = State.skmg;
+  if (!M.list) return '<div class="card"><div class="empty"><span class="loading"></span> 正在读取市场清单（6600+ 技能，首次可能要几秒）…</div></div>';
+  const mkt = M.mkt;
+  const all = M.list.market || [];
+  const kw = (M.kw || '').trim().toLowerCase();
+  const src = M.src || '';
+  const items = all.filter(d => (!src || d.source === src)
+    && (!kw || (d.shortName || '').toLowerCase().includes(kw)
+      || String(d.description || '').toLowerCase().includes(kw)
+      || (d.keywords || []).some(k => String(k).toLowerCase().includes(kw))));
+  const shown = items.slice(0, M.limit || 60);
+  const chip = (val, label, n) => '<button class="mcpc-chip' + (src === val ? ' on' : '') + '" onclick="State.skmg.src=' + fmt.attr(val)
+    + ';State.skmg.limit=60;render({paintOnly:true})">' + label
+    + (n != null ? ' <span class="mcpc-n">' + n + '</span>' : '') + '</button>';
+  const statusBar = mkt
+    ? '<div class="mcpc-verbar">'
+      + '<span class="tag ' + (mkt.syncing ? 'warn' : 'ok') + '">🛍️ 技能市场</span>'
+      + '<span class="muted" style="font-size:11.5px">' + fmt.esc(mkt.url || '') + ' @ ' + fmt.esc(mkt.branch || '') + '</span>'
+      + (mkt.needsUpdate === true ? '<span class="tag warn">有更新</span>' : mkt.needsUpdate === false ? '<span class="tag ok">已最新</span>' : '')
+      + (mkt.gitAvailable ? '' : '<span class="tag err">git 不可用</span>')
+      + '<span class="muted" style="font-size:11.5px">上次同步 ' + skmgTime(mkt.lastSyncAt)
+      + (mkt.autoSync ? ' · 每日自动' : '') + (mkt.syncOnStartup ? ' · 启动时' : '') + '</span>'
+      + '<button class="btn sm" onclick="skmgMarketSync()" ' + (mkt.syncing ? 'disabled' : '') + '>' + (mkt.syncing ? '⏳ 同步中' : '🔄 同步') + '</button>'
+      + '</div>'
+    : '';
+  const bar = '<div class="card" style="padding:10px 14px">'
+    + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+    + '<input placeholder="搜索技能：名称 / 描述 / 关键词" value="' + fmt.esc(M.kw || '') + '" style="flex:1 1 220px;min-width:180px"'
+    + ' oninput="State.skmg.kw=this.value;State.skmg.limit=60;render({paintOnly:true})">'
+    + '</div>'
+    + '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">'
+    + chip('', '全部', all.length)
+    + (M.list.sources || []).map(s => chip(s.source, fmt.esc(s.displayName || s.source), s.skills)).join('')
+    + '</div></div>';
+  if (!items.length) return statusBar + bar + '<div class="card"><div class="empty">没有匹配的技能 —— 换个关键词或来源试试</div></div>';
+  const cards = shown.map(d => '<div class="card mcpc-card">'
+    + '<div style="display:flex;gap:10px;align-items:flex-start"><div class="mcpc-ico mcpc-ico-ph">🧩</div>'
+    + '<div style="flex:1;min-width:0"><b>' + fmt.esc(d.shortName || d.name) + '</b>'
+    + '<div class="muted" style="font-size:11px">' + fmt.esc(d.source || '') + (d.version ? ' · v' + fmt.esc(d.version) : '') + '</div></div></div>'
+    + '<p style="font-size:12px;margin:8px 0 6px">' + fmt.esc(d.description || '') + '</p>'
+    + '<div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center">'
+    + (d.keywords || []).slice(0, 3).map(t => '<span class="tag gray">' + fmt.esc(t) + '</span>').join('')
+    + '<span class="tag gray">≈ ' + (d.tokens != null ? d.tokens + ' tok' : (d.chars || 0) + ' 字符') + '</span>'
+    + (d.installed ? '<span class="tag ok">已安装</span>' : '')
+    + '</div>'
+    + '<div style="display:flex;gap:6px;margin-top:10px;justify-content:flex-end">'
+    + '<button class="btn sm" onclick="skmgDetail(' + fmt.attr(d.name) + ')">详情</button>'
+    + (d.installed ? '' : '<button class="btn sm primary" onclick="skmgInstall(' + fmt.attr(d.name) + ')">安装</button>')
+    + '</div></div>').join('');
+  return statusBar + bar
+    + '<div class="mcpc-grid">' + cards + '</div>'
+    + '<div style="display:flex;gap:10px;align-items:center;justify-content:center;margin-top:12px">'
+    + (shown.length < items.length ? '<button class="btn sm" onclick="State.skmg.limit=(State.skmg.limit||60)+120;render({paintOnly:true})">显示更多（还有 ' + (items.length - shown.length) + ' 个）</button>' : '')
+    + '<span class="muted" style="font-size:11.5px">匹配 ' + items.length + ' 个 · 由插件从本地市场仓库扫描，点顶栏「同步市场」拉最新</span></div>';
+}
+
+/** 页签三：执行器（本机全部 coding agent 的技能目录；行点击下钻） */
+function skmgExecHtml() {
+  const M = State.skmg;
+  if (!M.execs) return '<div class="card"><div class="empty"><span class="loading"></span> 正在扫描本机执行器…</div></div>';
+  const rows = M.execs.map(e => '<tr style="cursor:' + (e.dirExists ? 'pointer' : 'default') + '" onclick="skmgDrill(' + fmt.attr(e.key) + ')">'
+    + '<td><b>' + fmt.esc(e.label) + '</b> <span class="mono muted" style="font-size:10.5px">' + fmt.esc(e.key) + '</span>'
+    + (e.locked ? ' <span class="tag gray">锁定</span>' : '')
+    + (e.readOnly ? ' <span class="tag gray">只读</span>' : '')
+    + (M.drill === e.key ? ' <span class="tag ok">▾ 已展开</span>' : '') + '</td>'
+    + '<td class="mono" style="font-size:11px;word-break:break-all">' + fmt.esc(e.dir)
+    + (e.dirExists ? '' : ' <span class="tag gray">未创建</span>') + '</td>'
+    + '<td style="text-align:right;white-space:nowrap">' + e.skillCount + '</td></tr>').join('');
+  let drill = '';
+  if (M.drill) {
+    const e = M.execs.find(x => x.key === M.drill) || { key: M.drill };
+    const d = M.drillData;
+    const canWrite = !e.locked && !e.readOnly;
+    drill = '<div class="card mt"><h3>🗂️ ' + fmt.esc(e.label || M.drill) + ' 的技能'
+      + ' <span class="muted mono" style="font-size:11px">' + fmt.esc(e.dir || '') + '</span></h3>'
+      + (!d ? '<div class="empty"><span class="loading"></span> 正在读取…</div>'
+        : !(d.skills || []).length ? '<div class="empty">该执行器目录还没有技能</div>'
+        : '<div class="mcpc-grid">' + d.skills.map(s => '<div class="card mcpc-card">'
+          + '<b>' + fmt.esc(s.name) + '</b>'
+          + '<p style="font-size:12px;margin:6px 0">' + fmt.esc(s.description || '') + '</p>'
+          + '<div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center">'
+          + (s.modelInvocable === false ? '<span class="tag warn">🚫 模型不可调用</span>' : '<span class="tag gray">🤖 模型可调用</span>')
+          + '<span class="tag gray">≈ ' + (s.tokens != null ? s.tokens + ' tok' : (s.chars || 0) + ' 字符') + '</span>'
+          + (s.linked ? '<span class="tag gray">🔗 软链接</span>' : '')
+          + '</div>'
+          + '<div style="display:flex;gap:6px;margin-top:10px;justify-content:flex-end;flex-wrap:wrap">'
+          + '<button class="btn sm" onclick="skmgDetail(' + fmt.attr(s.name) + ', ' + fmt.attr(M.drill) + ')">详情</button>'
+          + (M.drill !== 'dsh' ? '<button class="btn sm primary" onclick="skmgInstall(' + fmt.attr(s.name) + ', ' + fmt.attr(M.drill) + ')">收编到 DSH</button>' : '')
+          + (M.drill === 'dsh' || M.drill === 'agents'
+            ? '<button class="btn sm" onclick="skmgToggleInv(' + fmt.attr(s.name) + ', ' + (s.modelInvocable === false) + ')">' + (s.modelInvocable === false ? '允许模型调用' : '禁止模型调用') + '</button>' : '')
+          + (canWrite ? '<button class="btn sm danger" onclick="skmgDelete(' + fmt.attr(s.name) + ', ' + fmt.attr(M.drill) + ')">删除</button>' : '')
+          + '</div></div>').join('') + '</div>');
+  }
+  return '<div class="card"><h3>🗂️ 本机全部执行器（' + M.execs.length + ' 个）</h3>'
+    + '<p class="muted" style="font-size:12px">插件会扫描本机十几个 coding agent 的技能目录（Claude Code / ZCode / Codex / CodeBuddy / WorkBuddy…）。'
+    + '点任意一行展开该执行器的技能，「收编到 DSH」= 一键装进 DSH 用户库供 skill 工具调用。目录里放/删技能后点其他行或重进本页即会重扫。</p>'
+    + '<div style="overflow-x:auto"><table><thead><tr><th>执行器</th><th>技能根目录</th><th style="text-align:right">技能数</th></tr></thead>'
+    + '<tbody>' + rows + '</tbody></table></div></div>' + drill;
+}
+
+/** 详情弹窗：SKILL.md 元数据 + 正文预览 + 依赖文件清单 + 就地操作 */
+async function skmgDetail(name, executor) {
+  if (document.getElementById('skmgdetail')) return;
+  const mask = document.createElement('div');
+  mask.className = 'modal-mask'; mask.id = 'skmgdetail';
+  mask.innerHTML = '<div class="modal" style="width:min(780px,100%)"><h3>🧩 ' + fmt.esc(name) + '</h3>'
+    + '<div class="modal-body" id="skmgdetail-body"><div class="empty"><span class="loading"></span> 正在读取详情…</div></div>'
+    + '<div class="modal-actions"><button class="btn" onclick="document.getElementById(\'skmgdetail\').remove()">关闭</button></div></div>';
+  document.body.appendChild(mask);
+  const d = await skmgApi('GET', '/detail?name=' + encodeURIComponent(name) + (executor ? '&executor=' + encodeURIComponent(executor) : ''));
+  if (d.error) { mask.remove(); UI.err(d.error); return; }
+  const meta = d.meta || {};
+  const metaRow = (k, v) => (v != null && v !== '' ? '<tr><td style="width:96px;color:var(--txt-2)">' + k + '</td><td class="mono" style="font-size:11.5px;word-break:break-all">' + fmt.esc(String(v)) + '</td></tr>' : '');
+  const files = (d.files || []);
+  const body = '<div class="modal-body" style="max-height:min(560px,70vh);overflow:auto">'
+    + '<table style="margin-bottom:10px">'
+    + metaRow('路径', d.dir)
+    + metaRow('版本', meta.version) + metaRow('作者', meta.author)
+    + metaRow('whenToUse', meta.whenToUse)
+    + metaRow('注入开销', (d.tokens != null ? d.tokens + ' tokens' : d.chars + ' 字符') + ' · ' + (d.fileCount || files.length) + ' 个文件 · ' + skmgSize(d.totalSize))
+    + metaRow('状态', d.isInstalled ? '已装入 DSH 用户库' : '未安装（位于 ' + fmt.esc(d.executor || '?') + '）')
+    + '</table>'
+    + ((meta.keywords || []).length ? '<div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:10px">'
+      + meta.keywords.map(k => '<span class="tag gray">' + fmt.esc(k) + '</span>').join('') + '</div>' : '')
+    + (files.length ? '<details class="fold mb"><summary>📄 依赖文件（' + files.length + ' 个）</summary><div class="fold-body">'
+      + files.slice(0, 40).map(f => '<div class="mono" style="font-size:11px">' + fmt.esc(f.path || f) + '</div>').join('')
+      + (files.length > 40 ? '<div class="muted" style="font-size:11px">…其余 ' + (files.length - 40) + ' 个略</div>' : '')
+      + '</div></details>' : '')
+    + '<details class="fold" open><summary>📖 SKILL.md 正文预览</summary><div class="fold-body">'
+    + '<pre class="mono" style="font-size:11.5px;white-space:pre-wrap;max-height:280px;overflow:auto">' + fmt.esc(String(d.content || '').slice(0, 6000)) + (String(d.content || '').length > 6000 ? '\n…（正文过长，已截断）' : '') + '</pre>'
+    + '</div></details></div>'
+    + '<div class="modal-actions">'
+    + (d.executor === 'dsh' || d.executor === 'agents'
+      ? '<button class="btn" onclick="skmgToggleInv(' + fmt.attr(d.name) + ', ' + (meta['disable-model-invocation'] === true) + ')">'
+        + (meta['disable-model-invocation'] === true ? '允许模型调用' : '禁止模型调用') + '</button>' : '')
+    + (d.isInstalled
+      ? '<button class="btn danger" onclick="document.getElementById(\'skmgdetail\').remove();skmgDelete(' + fmt.attr(d.name) + ')">删除</button>'
+      : '<button class="btn primary" onclick="document.getElementById(\'skmgdetail\').remove();skmgInstall(' + fmt.attr(d.name) + (d.executor && d.executor !== 'dsh' && d.executor !== 'market' ? ', ' + fmt.attr(d.executor) : '') + ')">安装到 DSH</button>')
+    + '</div>';
+  document.getElementById('skmgdetail-body').outerHTML = body;
+}
+
+/** 页签四：本机配置 —— 原先整页的内容（作用域根目录 + 会话技能清单），
+ *  与插件管理的技能库是两套视角：前者按会话 cwd 解析 DSH 的加载根，
+ *  后者管的是磁盘上的技能目录本身。 */
+function skmgLocalHtml() {
   const sc = State.skillsScope;
   const list = sc?.skills || [];
   const byScope = {};
   list.forEach(s => (byScope[s.scope] = (byScope[s.scope] || 0) + 1));
   return `
-  <div class="page-title"><h2>Skills 管理</h2>
-    <span class="sub">${list.length} 个技能 · 按作用域分层（近层覆盖远层）${scopeTag('cwd')}</span>
-    <span class="pt-actions">
-      <button class="btn sm" onclick="reloadSkillsScope()" title="按当前会话工作目录重新扫描技能根目录">🔄 重新扫描</button>
-      
-    </span>
-  </div>
-  ${crumbOf('skillMgr')}
-  ${pageHelp('skillMgr')}
-  
-
   <div class="card mb">
     <h3>📚 技能根目录（作用域由路径决定）</h3>
     <table>
@@ -3921,7 +4292,7 @@ Pages.skillMgr = () => {
       <p>${fmt.esc(s.description || '—')}</p>
       <div class="muted mt mono" style="font-size:10.5px">${fmt.esc(s.file)} · ${s.bytes} 字节</div>
     </div>`).join('')}</div>` : '<div class="empty">当前工作空间下没有技能</div>' + emptyGuide('skillMgr')}`;
-};
+}
 
 /* ============ 知识库页（能力与资产）============
    这页本身很薄：真正的界面是插件自带的，控制台只负责三件事 ——
@@ -9828,6 +10199,7 @@ async function render(opts){
   if (r.id === 'deliverables') jobs.push(loadDeliverables());
   if (r.id === 'workflow') jobs.push(loadWorkflowRuns());
   if (r.id === 'mcp') jobs.push(loadMcpc());   // 连接器插件探测 + 版本/连接清单（市场/工具按页签惰性加载）
+  if (r.id === 'skillMgr') jobs.push(loadSkmg());   // 技能插件探测 + 清单（市场/执行器按页签惰性加载）
   }   // ← paintOnly 时跳过上面整段加载器
   if (jobs.length && !(opts && opts.refreshed)) {
     const done = await Promise.race([

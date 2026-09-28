@@ -22,12 +22,14 @@
 <img width="1910" alt="工作流 · 运行明细与子代理" src="docs/images/workflow.png" />
 <img width="1910" alt="工作空间 · 分组与工作目录" src="docs/images/workspace.png" />
 <img width="1910" alt="MCP 服务 · 连接器市场" src="docs/images/mcp-market.png" />
+<img width="1910" alt="Skills 管理 · 插件市场（6400+ 技能）" src="docs/images/skills-market.png" />
 <img width="1910" alt="知识库 · dsh-knowledge 插件管理界面" src="docs/images/knowledge.png" />
 
 ## 目录
 
 - [内置 GeoScene Pro MCP 对接](#内置-geoscene-pro-mcp-对接)
 - [MCP 连接器（dsh-mcp-connector 插件）](#mcp-连接器dsh-mcp-connector-插件)
+- [Skills 管理（@weibaohui/skills-management 插件）](#skills-管理weibaohuiskills-management-插件)
 - [知识库（dsh-knowledge 插件）](#知识库dsh-knowledge-插件)
 - [1. 架构与依赖关系](#1-架构与依赖关系)
 - [2. 环境要求](#2-环境要求)
@@ -184,6 +186,74 @@ dsh plugin --profile web add dsh-mcp-connector
 > ⚠️ stdio 类连接（如 GeoScenePro）依赖被拉起的本机程序：GeoScene Pro 没启动时，
 > `StartGeoSceneMcp` 会判断「Pro 未启动」，连接状态显示「未知/待恢复」——
 > 那是真实结果，不是故障；把 GeoScene Pro 打开后点「🩺 测活」即可恢复。
+
+---
+
+## Skills 管理（@weibaohui/skills-management 插件）
+
+与 MCP 连接器同构：控制台对第三方技能管理插件
+**[@weibaohui/skills-management](https://github.com/weibaohui/skills-management)**
+做了自适应集成。DSH 那边装了它，控制台侧不加任何配置，「Skills 管理」页就变成完整的
+技能中心——**已安装 / 市场 / 执行器** 三个页签由插件驱动；没装时这三个页签不出现，
+页面给出安装引导，「本机配置」页签照常可用。
+
+**插件提供什么**（本项目不重复实现，只负责接进来）
+
+- 内置 ntd 技能市场：6400+ 技能（gitcode 仓库每日自动同步），按来源 / 关键词过滤，
+  每张卡标注注入开销（≈token / 字符，js-tiktoken cl100k_base 估算）
+- 一键安装：市场 → DSH 用户库（`~/.dsh/skills`），已存在时确认后可覆盖；装完即用
+  （DSH 的技能加载有 watcher，免重启）
+- 本机执行器收编：扫描本机十余个 coding agent 的技能目录（Claude Code / ZCode /
+  Codex / OpenCode / CodeBuddy / WorkBuddy / Agents 等，可自定义目录），把其他
+  执行器已有的技能一键「收编到 DSH」
+- 模型可见性治理：切换 dsh 原生 frontmatter 键 `disable-model-invocation`——
+  关掉后技能不再自动注入模型（≈token 开销归零），用户仍可手动 `/技能名` 调用
+- 市场仓库治理：仓库地址 / 分支 / 自动同步策略可配（持久化到 `~/.dsh/settings.yaml`），
+  支持私有 token；同步状态（落后 / 领先 / 最近同步时间）在页面横条实时可见
+
+**安装（DSH 侧，一次性）**
+
+在 DSH 插件市场搜 `skills-management` 安装，或终端执行：
+
+```powershell
+dsh plugin --profile web add @weibaohui/skills-management
+```
+
+（插件管理语法以 `dsh plugin --help` 为准。）装完**重启 `dsh web`**。
+要求 Node.js 22.5+ / DSH >= 0.1.7-rc.2，详见[插件仓库 README](https://github.com/weibaohui/skills-management#readme)。
+
+**怎么用（控制台侧，零配置）**
+
+装好插件后打开侧栏「Skills 管理」（`#/skills/manager`），四个页签：
+
+| 页签 | 干什么 |
+|---|---|
+| **📦 已安装** | DSH 用户库（`~/.dsh/skills`）技能清单：每张卡标注 ≈token 注入开销、文件数 / 体积、修改时间；可看详情（SKILL.md 元数据 + 正文预览 + 依赖文件）、删除 |
+| **🛍️ 市场** | 6400+ 技能按来源过滤 + 关键词搜索；点「安装」一键装入用户库；顶部横条显示市场仓库状态（地址 / 分支 / 是否落后 / 上次同步），可手动「🔄 同步」 |
+| **🗂️ 执行器** | 本机全部 coding agent 技能目录一览（17 个内置执行器 + 自定义）；点行下钻看该执行器的技能，「收编到 DSH」一键搬运，dsh / agents 根内可切「模型可调用」 |
+| **⚙️ 本机配置** | 按当前会话 cwd 解析的技能加载根目录 + 会话实际加载的技能清单（原先整页的内容），与插件管理的技能库互不影响 |
+
+页面上还有：**🔄 同步市场**（git 拉取整库，分钟级）、**🔄 重扫本机**（重新扫描加载根目录）。
+列表每 1 分钟 TTL 缓存，安装 / 删除 / 同步后自动强制刷新。
+
+<img width="1910" alt="Skills 管理 · 插件市场" src="docs/images/skills-market.png" />
+<img width="1910" alt="Skills 管理 · 已安装清单" src="docs/images/skills-manager.png" />
+<img width="1910" alt="Skills 管理 · 本机执行器与收编" src="docs/images/skills-executors.png" />
+
+**控制台做了什么**
+
+- `server.cjs` 铺一组 `/api/skmg*` 通道：`/api/skmg/<子路径>` 等价转发插件 API
+  （GET/POST/PUT/DELETE 原样透传、query 与 JSON 体原样带过去；不设超时——市场同步
+  是 git 拉整库、要等）、`/api/skmg-status` 可用性探测（200=已装 / 404=未装）——
+  与 `/api/mcpc`、`/api/kb/*` 同一思路：控制台只铺通道与外壳，数据全部来自本机已装插件，
+  不落第二份拷贝
+- 页面外壳（四个页签、搜索、下钻、详情弹窗）由控制台实现，但安装 / 删除 / 治理开关
+  全部调插件自己的后端，与插件在 DSH 侧注册的 skill provider 天然一致
+
+**与「本机配置」的关系**：「本机配置」页签 = DSH 的技能加载视角（按会话 cwd 解析
+项目 / 用户根目录，展示会话里实际生效的技能）；「已安装 / 市场 / 执行器」= 磁盘上
+技能目录本身的管理视角。装插件装进的用户库（`~/.dsh/skills`）就是前者根目录之一，
+两条路最终汇合到 DSH 的 skill 工具。
 
 ---
 
@@ -629,7 +699,7 @@ dsh-console/
 |---|---|---|
 | 大模型 | `#/model` | `llm/listConfigurableProviders` / `session/modelCatalog` / `llm/discoverModels` / `session/selectModel` |
 | 智能体预设 | `#/agent/manage` | `agentPresets/list / read / select / copy / deletePreset` + `settings/openAgentPresetDirectory` |
-| Skills 管理 | `#/skills/manager` | 扫描 4 个技能根目录（项目 `.dsh/skills`、项目 `.agents/skills`、用户 `~/.dsh/skills`、用户 `~/.agents/skills`），解析 `SKILL.md` frontmatter |
+| Skills 管理 | `#/skills/manager` | 四页签：**已安装 / 市场 / 执行器**（来自 @weibaohui/skills-management 插件，经 `/api/skmg` 通道：6400+ 市场一键安装、DSH 用户库管理、本机 17 个执行器收编、模型可见性治理、市场同步；插件未装时显示引导）+ **本机配置**（按会话 cwd 解析 4 个技能根目录 + `skills/list` 会话清单）——见[「Skills 管理（@weibaohui/skills-management 插件）」](#skills-管理weibaohuiskills-management-插件)一节 |
 | MCP 服务 | `#/mcp/manager` | 四页签：**已连接 / 市场 / 工具**（来自 dsh-mcp-connector 插件，经 `/api/mcpc` 通道：市场一键连接、连接管理、测活、JSON/手动/URL 三入口添加、跨连接工具搜索；插件未装时显示引导）+ **本机配置**（读 `cordis.patch.yml` + 交叉验证插件树 + TCP 探测 `127.0.0.1:11000` + 真实 MCP 握手）——见[「MCP 连接器（dsh-mcp-connector 插件）」](#mcp-连接器dsh-mcp-connector-插件)一节 |
 | 插件 | `#/plugin/manager` | `dsh --profile web --dump-config` 解析插件树（规模随部署而变）+ **动态插件清单** `dynamicCordisRunner/inventory`（只读）+ `pluginInventory/list` 运行时清单（含 fiber 阶段）——两个清单的规模都随 DSH 版本变，别当常量 |
 | 知识库 | `#/knowledge` | 装了 `dsh-knowledge` 插件才可用；装载插件自带的库 / 文档 / 检索管理界面，数据走 `/api/kb/*` 通道（见[「知识库（dsh-knowledge 插件）」](#知识库dsh-knowledge-插件)一节） |
@@ -732,6 +802,8 @@ dsh-console/
 | `GET /api/kb-status` | — | 知识库插件可用性（`{available, origin, route}`） |
 | `GET /api/kb-client.js` | — | 从本机已装的插件里取回的插件界面代码（运行时取，不落第二份拷贝） |
 | `GET /api/kb-react` | — | 内置 React 运行时的位置（`public/react/`，构建期抽取）；浏览器按它给出的 URL 再取字节 |
+| `/api/skmg/<子路径>` | method / query / JSON 体原样透传 | 等价转发到 DSH 主机的 `/skills-management/api/<子路径>`（@weibaohui/skills-management 插件后端）。GET/POST/PUT/DELETE 都支持、不设超时（市场同步是 git 拉整库）、令牌过期 401 时就地重换会话 cookie 重发；插件未装时回明确的 unavailable |
+| `GET /api/skmg-status` | — | Skills 管理插件可用性（`{available, unavailable, httpStatus, origin}`；404 → 插件没装） |
 
 其余 `/api/*` 一律**原样转发**到 `DSH_ORIGIN`，包括：
 
