@@ -22,6 +22,7 @@
 <img width="1910" alt="工作流 · 运行明细与子代理" src="docs/images/workflow.png" />
 <img width="1910" alt="工作空间 · 分组与工作目录" src="docs/images/workspace.png" />
 <img width="1910" alt="知识库 · dsh-knowledge 插件管理界面" src="docs/images/knowledge.png" />
+<img width="1910" alt="MCP 服务 · GeoScenePro 内置对接" src="docs/images/mcp.png" />
 
 ## 目录
 
