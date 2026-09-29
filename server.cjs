@@ -631,6 +631,253 @@ function writeUiPrefs(obj) {
   }
 }
 
+/* ---------- 技能编排：项目根解析 / 技能名校验 / 磁盘读写 ---------- */
+
+/** DSH 认定的「项目根」：向上找最近一个含 .git 的祖先目录；找不到就用传入的 cwd。
+ *  必须与 @deepseek-ai/dsh-skill-filesystem 的 findProjectRoot 一致 ——
+ *  技能根目录是 <项目根>/.dsh/skills，直接用会话 cwd 会在 git 子目录里写错地方。 */
+function findProjectRoot(cwd) {
+  let dir = path.resolve(String(cwd || process.cwd()));
+  for (let i = 0; i < 40; i++) {
+    try { if (fs.existsSync(path.join(dir, '.git'))) return dir; } catch {}
+    const up = path.dirname(dir);
+    if (up === dir) break;
+    dir = up;
+  }
+  return path.resolve(String(cwd || process.cwd()));
+}
+
+/** DSH 技能名规则：kebab-case（小写字母/数字，段间单个连字符）。
+ *  不合法时 DSH 会**静默丢弃**整个技能（只留一条 warning 日志），
+ *  模型目录里看不出"不存在"和"写错了"的区别 —— 所以导出前必须在这里拦住。 */
+function isValidSkillName(name) {
+  return typeof name === 'string' && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name) && name.length <= 64;
+}
+
+/** 把任意用户输入转成候选 kebab-case（仅用于给建议，不代替校验）。
+ *  纯中文名会被剥空 —— 这时由调用方用 stableSlug 兜底，**不要用时间戳**：
+ *  同一个编排每次导出必须落到同一个目录，否则冲突检测与"再编辑"都失效。 */
+function toKebab(s) {
+  return String(s || '')
+    .replace(/[\u4e00-\u9fa5]+/g, '')            // 中文无法音译，直接去掉
+    .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/-{2,}/g, '-')
+    .slice(0, 64)
+    .replace(/-+$/, '');
+}
+
+/** 由名字派生的稳定 slug：中文等无法音译时用它，保证同名 → 同目录。 */
+function stableSlug(s) {
+  const k = toKebab(s);
+  if (k) return k;
+  const h = crypto.createHash('sha1').update(String(s || ''), 'utf8').digest('hex').slice(0, 10);
+  return 'orch-' + h;
+}
+
+/** 编排草稿目录：<项目根>/.dsh/orchestrations/<name>.json
+ *  与技能同放在 .dsh 下，但**不放 skills/ 里面** —— skills/ 只认直接子目录的 SKILL.md，
+ *  多一层 orchestrations/ 会被忽略，不干扰技能发现。 */
+function orchDir(projectRoot) {
+  return path.join(findProjectRoot(projectRoot), '.dsh', 'orchestrations');
+}
+function skillRootFor(projectRoot) {
+  return path.join(findProjectRoot(projectRoot), '.dsh', 'skills');
+}
+
+/** 把一个编排 JSON 文件读成列表项（读不动就标 broken，列表不因单个坏文件整体失败）。 */
+function orchItemFrom(file, fallbackName) {
+  try {
+    const doc = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const st = fs.statSync(file);
+    return {
+      file, name: String(doc.name || fallbackName || ''),
+      title: String(doc.title || doc.name || fallbackName || ''),
+      description: String(doc.description || ''),
+      nodeCount: Array.isArray(doc.nodes) ? doc.nodes.length : 0,
+      updatedAt: st.mtime.toISOString(),
+      exportedAt: doc.exportedAt || null,
+    };
+  } catch (e) {
+    return { file, name: fallbackName || '', broken: true, error: e.message };
+  }
+}
+
+/** 列出某项目下的编排源文件。两个来源都要收：
+ *  ① <项目根>/.dsh/orchestrations/<name>.json —— 手工保存的草稿；
+ *  ② <技能根>/<名字>/orchestration.json     —— 导出技能时随技能一起写进去的自包含源。
+ *  只认 ① 的话，"换了台机器 / 别人把技能目录拷过来"就再也回不到画布了，
+ *  这正是"导出的技能不能再次编排"的根因。
+ *  `name` 统一取文档里的 name（= 技能目录名），保证 export 的同名冲突检测认得出。 */
+function listOrchestrations(projectRoot) {
+  const dir = orchDir(projectRoot);
+  const out = [];
+  const seen = new Set();   // 以 name 去重：草稿优先（它是用户最近编辑的那份）
+
+  let entries = [];
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { entries = []; }
+  for (const e of entries) {
+    if (!e.isFile() || !e.name.endsWith('.json')) continue;
+    const it = orchItemFrom(path.join(dir, e.name), e.name.replace(/\.json$/, ''));
+    it.origin = 'draft';
+    if (it.name && !seen.has(it.name)) seen.add(it.name);
+    out.push(it);
+  }
+
+  // 已导出技能自带的源：技能根下一层目录里的 orchestration.json
+  const root = skillRootFor(projectRoot);
+  let skDirs = [];
+  try { skDirs = fs.readdirSync(root, { withFileTypes: true }); } catch { skDirs = []; }
+  for (const d of skDirs) {
+    if (!d.isDirectory()) continue;
+    const f = path.join(root, d.name, 'orchestration.json');
+    if (!fs.existsSync(f)) continue;
+    const it = orchItemFrom(f, d.name);
+    it.origin = 'skill';
+    it.skillDir = path.join(root, d.name);
+    if (it.name && seen.has(it.name)) it.shadowed = true;   // 同名的草稿也在 → 标注出来
+    out.push(it);
+  }
+
+  out.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+  return { dir, items: out };
+}
+
+/** 读某条编排的源文件。优先草稿，找不到再退到技能目录里的 orchestration.json —— 
+ *  名字相同就是同一个编排，用户不该关心它存在哪儿。
+ *
+ *  ⚠ 为什么要传多个候选 projectRoot：编排的存在性是**按项目根**判定的，而项目根由 cwd 推出来。
+ *  控制台进程的 cwd、DSH 会话的 cwd、用户后来选的工作目录可能不是同一个 ——
+ *  前端下拉的清单和这次读取如果落在不同候选上，就会"清单里看得见、点开却说找不到"。
+ *  所以调用方把候选根按优先级排好传进来，这里逐个试；命中哪个就用哪个（返回值里带上）。 */
+function readOrchestration(roots, name) {
+  const safe = String(name).replace(/[\\/:*?"<>|]/g, '_');
+  const list = (Array.isArray(roots) ? roots : [roots]).filter(Boolean);
+  /* 名字本身很可能是从清单里原样拿来的，不该再被清洗 —— 但用户手输时可能带引号/首尾空格，
+     那种名字必然找不到。这里额外试一次"去掉包裹引号 + trim"的形态，避免把明显是输入
+     瑕疵的名字报成"这个编排不存在"。 */
+  const bare = String(name).replace(/^["']|["']$/g, '').trim();
+  const names = bare && bare !== String(name) ? [safe, bare.replace(/[\\/:*?"<>|]/g, '_')] : [safe];
+  for (const root of list) {
+    for (const nm of names) {
+      const candidates = [
+        { file: path.join(orchDir(root), nm + '.json'), origin: 'draft' },
+        { file: path.join(skillRootFor(root), nm, 'orchestration.json'), origin: 'skill' },
+      ];
+      for (const c of candidates) {
+        try {
+          if (!fs.existsSync(c.file)) continue;
+          const doc = JSON.parse(fs.readFileSync(c.file, 'utf8'));
+          return { ok: true, doc, file: c.file, origin: c.origin, projectRoot: root, name: nm };
+        } catch (e) {
+          return { ok: false, error: '读取失败：' + e.message, file: c.file, projectRoot: root };
+        }
+      }
+    }
+  }
+  return { ok: false, error: '找不到这个编排（草稿与技能目录里都没有）：' + safe,
+    projectRoot: list[0] || '', searchedRoots: list };
+}
+
+/** 由编排图生成 SKILL.md 正文：写成模型能直接读懂的"步骤说明 + 每步工具调用"，
+ *  而不是塞一段 JSON —— 技能是给模型读的，自然语言指令才有用。 */
+function buildSkillMarkdown(orch) {
+  const name = String(orch.name || '');
+  const title = String(orch.title || name);
+  const desc = String(orch.description || '').trim();
+  const nodes = Array.isArray(orch.nodes) ? orch.nodes : [];
+  const edges = Array.isArray(orch.edges) ? orch.edges : [];
+  const byId = new Map(nodes.map(n => [n.id, n]));
+
+  const order = topoOrder(nodes, edges);
+  const lines = [];
+  lines.push('---');
+  lines.push('name: ' + name);
+  // description 是 DSH 的必填项；用户没填时用标题兜底，绝不留空（空会被整个丢弃）
+  lines.push('description: ' + yamlScalar(desc || (title + '（由技能编排生成）')));
+  if (orch.whenToUse) lines.push('whenToUse: ' + yamlScalar(String(orch.whenToUse)));
+  lines.push('metadata:');
+  lines.push('  generated-by: dsh-console/orchestrator');
+  lines.push('  generated-at: ' + new Date().toISOString());
+  lines.push('  node-count: ' + String(nodes.length));
+  lines.push('---');
+  lines.push('');
+  lines.push('# ' + title);
+  lines.push('');
+  if (desc) { lines.push(desc); lines.push(''); }
+  lines.push('## 编排步骤');
+  lines.push('');
+  lines.push('按下面的顺序执行。每一步的工具调用与参数来源都由前一步的输出决定，不要改变顺序。');
+  lines.push('');
+
+  order.forEach((n, i) => {
+    const tool = String(n.tool || n.label || '(未命名工具)');
+    lines.push('### ' + (i + 1) + '. ' + tool);
+    if (n.connector && n.server) lines.push('- 服务：' + n.connector + ' / ' + n.server);
+    if (n.note) lines.push('- 说明：' + n.note);
+    const args = n.args && typeof n.args === 'object' ? n.args : {};
+    const keys = Object.keys(args);
+    if (keys.length) {
+      lines.push('- 参数：');
+      for (const k of keys) {
+        const a = args[k] || {};
+        const src = a.source === 'upstream'
+          ? '来自步骤 ' + (order.findIndex(x => x.id === a.fromNode) + 1) + '（' + (byId.get(a.fromNode)?.tool || '?') + '）的输出' + (a.fromField ? ' 字段 ' + a.fromField : '')
+          : a.source === 'runtime' ? '运行时由用户提供' : '固定值 ' + JSON.stringify(a.value === undefined ? null : a.value);
+        lines.push('  - `' + k + '`：' + src);
+      }
+    }
+    lines.push('');
+  });
+
+  const tail = edges.filter(e => !byId.has(e.from) || !byId.has(e.to));
+  if (tail.length) {
+    lines.push('## 未连接的连线（编排不完整）');
+    lines.push('');
+    lines.push('以下连线指向不存在的节点，执行前请先在编排器里修好：');
+    for (const e of tail) lines.push('- ' + String(e.from) + ' → ' + String(e.to));
+    lines.push('');
+  }
+  return lines.join('\n');
+}
+
+/** 只用于 frontmatter 的标量：含特殊字符就加双引号转义。 */
+function yamlScalar(s) {
+  const v = String(s).replace(/\r?\n/g, ' ').trim();
+  if (/^[A-Za-z0-9_\u4e00-\u9fa5][^:#]*$/.test(v) && !/^\s|\s$/.test(v)) return v;
+  return JSON.stringify(v);
+}
+
+/** 拓扑排序：返回节点的执行顺序。有环时把剩余节点按原顺序接在后面（不抛错，
+ *  让校验器去报"有环"这个错，导出仍然能产出可读文本）。 */
+function topoOrder(nodes, edges) {
+  const ids = nodes.map(n => n.id);
+  const indeg = new Map(ids.map(i => [i, 0]));
+  const adj = new Map(ids.map(i => [i, []]));
+  for (const e of edges) {
+    if (!indeg.has(e.from) || !indeg.has(e.to)) continue;
+    adj.get(e.from).push(e.to);
+    indeg.set(e.to, indeg.get(e.to) + 1);
+  }
+  const queue = ids.filter(i => indeg.get(i) === 0);
+  const out = [];
+  while (queue.length) {
+    const id = queue.shift();
+    out.push(nodes.find(n => n.id === id));
+    for (const nx of adj.get(id)) {
+      indeg.set(nx, indeg.get(nx) - 1);
+      if (indeg.get(nx) === 0) queue.push(nx);
+    }
+  }
+  if (out.length < nodes.length) {
+    const seen = new Set(out.map(n => n.id));
+    for (const n of nodes) if (!seen.has(n.id)) out.push(n);
+  }
+  return out;
+}
+
 function loadPlugins(force) {
   if (PLUGIN_CACHE && !force) return PLUGIN_CACHE;
   const profile = process.env.DSH_PROFILE || 'web';
@@ -1487,6 +1734,135 @@ const server = http.createServer(async (req, res) => {
       skills: found,
     }));
   }
+  /* 技能编排：草稿的读 / 写 / 删。草稿是 JSON，落在 <项目根>/.dsh/orchestrations/，
+     与技能目录同级但不在 skills/ 里面（skills/ 只认直接子目录的 SKILL.md，不会误扫到）。
+     控制台在这里只做"用户显式触发的存取"，不维护任何自己的状态。 */
+  if (pathname === '/api/local/orch') {
+    const reply = (code, obj) => {
+      res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      res.end(JSON.stringify(obj));
+    };
+    /* cwd 可以传多次（?cwd=A&cwd=B）：前端把「当前会话 cwd + 近期会话 cwd」都送来，
+       后端按顺序解析出项目根。列表与读取用**同一份候选**，就不会出现
+       "清单里看得见、点开却说找不到"。写操作前端只送一个，所以主根仍是第一个。 */
+    const cwdParams = url.searchParams.getAll('cwd').filter(Boolean);
+    const cwd = cwdParams[0] || process.env.DSH_SESSION_CWD || process.cwd();
+    const projectRoot = findProjectRoot(cwd);
+    const readRoots = [projectRoot];
+    for (const c of [...cwdParams, process.env.DSH_SESSION_CWD, process.cwd()]) {
+      if (!c) continue;
+      const r2 = findProjectRoot(c);
+      if (r2 && !readRoots.includes(r2)) readRoots.push(r2);
+    }
+    if (req.method === 'GET') {
+      const one = url.searchParams.get('name');
+      // 读单个：草稿优先，退到技能目录里的 orchestration.json（同名即同一个编排）
+      if (one) return reply(200, readOrchestration(readRoots, one));
+      /* 列表也走候选根：把几处能找到的都列出来，同名去重（先命中的那份为准） */
+      const seen = new Set();
+      const items = [];
+      let dir = orchDir(projectRoot);
+      for (const root of readRoots) {
+        const L = listOrchestrations(root);
+        if (root === projectRoot) dir = L.dir;
+        for (const it of L.items) {
+          const k = it.origin + '|' + (it.name || it.file);
+          if (seen.has(k)) continue;
+          seen.add(k);
+          if (root !== projectRoot) it.fromRoot = root;
+          items.push(it);
+        }
+      }
+      items.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+      return reply(200, { ok: true, projectRoot, readRoots, dir, items, skillRoot: skillRootFor(projectRoot) });
+    }
+    if (req.method === 'POST') {
+      let body = {};
+      try { body = await readJsonBody(req, 512 * 1024); }
+      catch (e) { return reply(400, { ok: false, error: e.message }); }
+      const doc = body && typeof body.doc === 'object' && body.doc ? body.doc : null;
+      if (!doc) return reply(400, { ok: false, error: '缺少 doc' });
+      const rawName = String(body.name || doc.name || '').trim();
+      if (!rawName) return reply(400, { ok: false, error: '缺少编排名称' });
+      const safe = rawName.replace(/[\\/:*?"<>|]/g, '_').slice(0, 80);
+      const dir = orchDir(projectRoot);
+      try {
+        fs.mkdirSync(dir, { recursive: true });
+        const file = path.join(dir, safe + '.json');
+        fs.writeFileSync(file, JSON.stringify({ ...doc, name: safe, savedAt: new Date().toISOString() }, null, 2), 'utf8');
+        return reply(200, { ok: true, file, projectRoot });
+      } catch (e) { return reply(200, { ok: false, error: '保存失败：' + e.message }); }
+    }
+    if (req.method === 'DELETE') {
+      const one = url.searchParams.get('name');
+      if (!one) return reply(400, { ok: false, error: '缺少 name' });
+      const file = path.join(orchDir(projectRoot), String(one).replace(/[\\/:*?"<>|]/g, '_') + '.json');
+      try { fs.unlinkSync(file); return reply(200, { ok: true, file }); }
+      catch (e) { return reply(200, { ok: false, error: '删除失败：' + e.message }); }
+    }
+    return reply(405, { ok: false, error: 'method not allowed' });
+  }
+
+  /* 技能编排 → 导出 SKILL.md。
+     写盘规则完全按 DSH 的 @deepseek-ai/dsh-skill-filesystem：
+       · 位置 <项目根>/.dsh/skills/<name>/SKILL.md
+       · name 必须 kebab-case、description 必填 —— 不合法 DSH 会**静默丢弃**整个技能，
+         所以这里必须拦住并把原因告诉用户。
+       · 目录只认一层、不递归；同名默认拒绝（409），由用户确认后再带 overwrite=true 覆盖。 */
+  if (pathname === '/api/local/orch/export' && req.method === 'POST') {
+    const reply = (code, obj) => {
+      res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      res.end(JSON.stringify(obj));
+    };
+    let body = {};
+    try { body = await readJsonBody(req, 1024 * 1024); }
+    catch (e) { return reply(400, { ok: false, error: e.message }); }
+    const doc = body && typeof body.doc === 'object' && body.doc ? body.doc : null;
+    if (!doc) return reply(400, { ok: false, error: '缺少编排内容' });
+
+    const cwd = String(body.cwd || process.env.DSH_SESSION_CWD || process.cwd());
+    const projectRoot = findProjectRoot(cwd);
+    const scope = body.scope === 'user' ? 'user' : 'project';
+    const home = process.env.USERPROFILE || process.env.HOME || '';
+    const root = scope === 'user' ? path.join(home, '.dsh', 'skills') : skillRootFor(projectRoot);
+
+    // name 优先取文档里的 name；中文名无法音译，退化成由名字派生的稳定 slug
+    let name = String(doc.name || '').trim();
+    if (!isValidSkillName(name)) name = stableSlug(name);
+    const description = String(doc.description || '').trim();
+    if (!description) {
+      return reply(400, { ok: false, error: 'description 不能为空（DSH 必填，留空会导致技能被静默丢弃）', suggestedName: name });
+    }
+    if (!Array.isArray(doc.nodes) || doc.nodes.length === 0) {
+      return reply(400, { ok: false, error: '编排里没有任何节点', suggestedName: name });
+    }
+
+    const dir = path.join(root, name);
+    const file = path.join(dir, 'SKILL.md');
+    if (fs.existsSync(file) && body.overwrite !== true) {
+      return reply(409, { ok: false, conflict: true, file, dir, root, name, error: '同名技能已存在' });
+    }
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      const md = buildSkillMarkdown({ ...doc, name });
+      fs.writeFileSync(file, md, 'utf8');
+      // 同时把编排草稿落在技能目录内（自包含：拷走一个目录就是完整技能 + 可再编辑的源）
+      fs.writeFileSync(path.join(dir, 'orchestration.json'),
+        JSON.stringify({ ...doc, name, exportedAt: new Date().toISOString() }, null, 2), 'utf8');
+      // 导出的同时也写一份到 orchestrations/，这样"导出过的编排"在草稿列表里一定找得到 ——
+      // 否则用户导出完关掉页面，下次就再也找不回这次画的东西了。
+      try {
+        const od = orchDir(projectRoot);
+        fs.mkdirSync(od, { recursive: true });
+        fs.writeFileSync(path.join(od, name + '.json'),
+          JSON.stringify({ ...doc, name, savedAt: new Date().toISOString(), exportedAt: new Date().toISOString() }, null, 2), 'utf8');
+      } catch (e) { console.warn('[console] 导出后写草稿失败：' + e.message); }
+      return reply(200, { ok: true, file, dir, root, name, bytes: Buffer.byteLength(md, 'utf8'), scope, projectRoot });
+    } catch (e) {
+      return reply(200, { ok: false, error: '导出失败：' + e.message });
+    }
+  }
+
   if (pathname === '/api/local/plugins') {
     const force = url.searchParams.get('refresh') === '1';
     const data = loadPlugins(force);

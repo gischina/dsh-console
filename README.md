@@ -224,17 +224,20 @@ dsh plugin --profile web add @weibaohui/skills-management
 
 **怎么用（控制台侧，零配置）**
 
-装好插件后打开侧栏「Skills 管理」（`#/skills/manager`），四个页签：
+装好插件后打开侧栏「Skills 管理」（`#/skills/manager`），五个页签：
 
 | 页签 | 干什么 |
 |---|---|
 | **📦 已安装** | DSH 用户库（`~/.dsh/skills`）技能清单：每张卡标注 ≈token 注入开销、文件数 / 体积、修改时间；可看详情（SKILL.md 元数据 + 正文预览 + 依赖文件）、删除 |
-| **🛍️ 市场** | 6400+ 技能按来源过滤 + 关键词搜索；点「安装」一键装入用户库；顶部横条显示市场仓库状态（地址 / 分支 / 是否落后 / 上次同步），可手动「🔄 同步」 |
+| **🛍️ 市场** | 6400+ 技能按来源过滤 + 关键词搜索；点「安装」一键装入用户库；顶部横条显示市场仓库状态（地址 / 分支 / 是否落后 / 上次同步） |
 | **🗂️ 执行器** | 本机全部 coding agent 技能目录一览（17 个内置执行器 + 自定义）；点行下钻看该执行器的技能，「收编到 DSH」一键搬运，dsh / agents 根内可切「模型可调用」 |
 | **⚙️ 本机配置** | 按当前会话 cwd 解析的技能加载根目录 + 会话实际加载的技能清单（原先整页的内容），与插件管理的技能库互不影响 |
+| **🧬 编排** | 可视化画布把 MCP 工具与技能串成一条编排，三层校验后导出为 SKILL.md；不依赖插件，随时可用 |
 
 页面上还有：**🔄 同步市场**（git 拉取整库，分钟级）、**🔄 重扫本机**（重新扫描加载根目录）。
 列表每 1 分钟 TTL 缓存，安装 / 删除 / 同步后自动强制刷新。
+
+> 「🧬 编排」不依赖插件，插件未安装时这一页签照常可用。
 
 <img width="1910" alt="Skills 管理 · 插件市场" src="docs/images/skills-market.png" />
 <img width="1910" alt="Skills 管理 · 已安装清单" src="docs/images/skills-manager.png" />
@@ -247,13 +250,13 @@ dsh plugin --profile web add @weibaohui/skills-management
   是 git 拉整库、要等）、`/api/skmg-status` 可用性探测（200=已装 / 404=未装）——
   与 `/api/mcpc`、`/api/kb/*` 同一思路：控制台只铺通道与外壳，数据全部来自本机已装插件，
   不落第二份拷贝
-- 页面外壳（四个页签、搜索、下钻、详情弹窗）由控制台实现，但安装 / 删除 / 治理开关
+- 页面外壳（五个页签、搜索、下钻、详情弹窗）由控制台实现，但安装 / 删除 / 治理开关
   全部调插件自己的后端，与插件在 DSH 侧注册的 skill provider 天然一致
 
 **与「本机配置」的关系**：「本机配置」页签 = DSH 的技能加载视角（按会话 cwd 解析
 项目 / 用户根目录，展示会话里实际生效的技能）；「已安装 / 市场 / 执行器」= 磁盘上
-技能目录本身的管理视角。装插件装进的用户库（`~/.dsh/skills`）就是前者根目录之一，
-两条路最终汇合到 DSH 的 skill 工具。
+技能目录本身的管理视角；「🧬 编排」是编辑器，产出也是技能。装插件装进的用户库
+（`~/.dsh/skills`）就是前者根目录之一，两条路最终汇合到 DSH 的 skill 工具。
 
 ---
 
@@ -699,7 +702,7 @@ dsh-console/
 |---|---|---|
 | 大模型 | `#/model` | `llm/listConfigurableProviders` / `session/modelCatalog` / `llm/discoverModels` / `session/selectModel` |
 | 智能体预设 | `#/agent/manage` | `agentPresets/list / read / select / copy / deletePreset` + `settings/openAgentPresetDirectory` |
-| Skills 管理 | `#/skills/manager` | 四页签：**已安装 / 市场 / 执行器**（来自 @weibaohui/skills-management 插件，经 `/api/skmg` 通道：6400+ 市场一键安装、DSH 用户库管理、本机 17 个执行器收编、模型可见性治理、市场同步；插件未装时显示引导）+ **本机配置**（按会话 cwd 解析 4 个技能根目录 + `skills/list` 会话清单）——见[「Skills 管理（@weibaohui/skills-management 插件）」](#skills-管理weibaohuiskills-management-插件)一节 |
+| Skills 管理 | `#/skills/manager` | 五页签：**已安装 / 市场 / 执行器**（来自 @weibaohui/skills-management 插件，经 `/api/skmg` 通道：6400+ 市场一键安装、DSH 用户库管理、本机 17 个执行器收编、模型可见性治理、市场同步；插件未装时显示引导）+ **本机配置**（按会话 cwd 解析 4 个技能根目录 + `skills/list` 会话清单）+ **编排**（可视化画布 + 三层校验 + 导出 SKILL.md）——见[「Skills 管理（@weibaohui/skills-management 插件）」](#skills-管理weibaohuiskills-management-插件)一节 |
 | MCP 服务 | `#/mcp/manager` | 四页签：**已连接 / 市场 / 工具**（来自 dsh-mcp-connector 插件，经 `/api/mcpc` 通道：市场一键连接、连接管理、测活、JSON/手动/URL 三入口添加、跨连接工具搜索；插件未装时显示引导）+ **本机配置**（读 `cordis.patch.yml` + 交叉验证插件树 + TCP 探测 `127.0.0.1:11000` + 真实 MCP 握手）——见[「MCP 连接器（dsh-mcp-connector 插件）」](#mcp-连接器dsh-mcp-connector-插件)一节 |
 | 插件 | `#/plugin/manager` | `dsh --profile web --dump-config` 解析插件树（规模随部署而变）+ **动态插件清单** `dynamicCordisRunner/inventory`（只读）+ `pluginInventory/list` 运行时清单（含 fiber 阶段）——两个清单的规模都随 DSH 版本变，别当常量 |
 | 知识库 | `#/knowledge` | 装了 `dsh-knowledge` 插件才可用；装载插件自带的库 / 文档 / 检索管理界面，数据走 `/api/kb/*` 通道（见[「知识库（dsh-knowledge 插件）」](#知识库dsh-knowledge-插件)一节） |

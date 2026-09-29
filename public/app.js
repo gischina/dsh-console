@@ -549,6 +549,19 @@ const State = { sessionId: null, sessions: [], host: null, skills: [], presets: 
                 skmg: { available: null, unavailable: false, probeAt: 0, tab: 'installed',
                         list: null, listAt: 0, kw: '', src: '', limit: 60,
                         execs: null, execsAt: 0, drill: '', drillData: null, mkt: null, mktAt: 0 },
+                /* 技能编排器：草稿、节点仓库、画布。全部是纯客户端状态 ——
+                   只有"保存/导出"这两步才碰磁盘，且必须由用户显式触发。 */
+                orch: { loaded: false, projectRoot: '', skillRoot: '', dir: '', items: null,
+                        name: 'my-orchestration', title: '', description: '',
+                        nodes: [], edges: [], sel: null,
+                        dragging: null, linking: null, linkFrom: null, linkAt: null,
+                        /* pool*：左栏节点仓库。conns=可选 MCP 服务（连接器），conn=当前选中的服务 key（''=全部）。
+                           pool 只装**当前服务**下的工具，切服务就重取 —— 一次列全部 31 个工具既挤又难找。 */
+                        pool: null, poolAt: 0, poolKw: '', poolKind: 'mcp', poolErr: '',
+                        conns: null, conn: '', poolLoading: false, poolAll: null,
+                        metaOpen: false,       // 顶部「编排说明」气泡是否展开
+                        hoverEdge: null,       // 画布上悬停的连线（显示匹配详情）
+                        lastCheck: null, busy: false },
                 ftree: { scopeSession: null, dirs: {}, expanded: {}, preview: null, error: null } };
 
 /** 是否子代理会话（origin 由 session/list 返回：'user' | 'subagent' | …） */
@@ -3145,10 +3158,15 @@ const PAGE_CHECKS = {
     { name: 'Skills 管理插件（市场 / 执行器）', opt: true, fn: async () => {
         const p = await (await fetch('/api/skmg-status')).json();
         if (!p.available) throw new Error('未安装 @weibaohui/skills-management（可选插件）');
-        const r = await skmgApi('GET', '');
+        /* ⚠ 这里**不能**打插件的全量清单（GET ''）—— 那是全市场扫盘，实测 ~7.4s / 2.37MB，
+           自检会把这一页拖成"转圈好几秒"。自检只要确认"插件在、接口通"，走轻量的
+           market/status（~0.4s）即可；清单本身在「已安装 / 市场」页签里另取。 */
+        const r = await skmgApi('GET', '/market/status');
         if (r.error) throw new Error(r.error);
         return r;
-      }, want: r => '市场 ' + (r.market || []).length + ' · 已装 ' + (r.installed || []).length + ' · 来源 ' + (r.sources || []).length },
+      }, want: r => '市场仓库 ' + (r.branch ? '@ ' + r.branch : '可用')
+        + (r.needsUpdate === true ? ' · 有更新' : r.needsUpdate === false ? ' · 已最新' : '')
+        + (r.gitAvailable ? '' : ' · git 不可用') },
     { name: '技能清单 skills/list', fn: () => API.call('skill.list', { sessionId: State.sessionId }),
       want: v => (v.skills || []).length + ' 个技能' },
     { name: '技能根目录（本机扫描）', fn: async () => {
@@ -3925,14 +3943,762 @@ async function skmgApi(method, sub, body) {
 function skmgSize(n) { return n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : n >= 1024 ? (n / 1024).toFixed(1) + ' KB' : (n || 0) + ' B'; }
 function skmgTime(ts) { return ts ? new Date(ts).toLocaleString('zh-CN', { hour12: false }) : '—'; }
 
+/* ==================================================================
+   技能编排器
+   ------------------------------------------------------------------
+   定位：**编辑器 + 静态校验器 + 代码生成器**，不是运行时引擎。
+   控制台在这里只做三件事 —— 画图、校验、导出 SKILL.md；执行交给 DSH。
+   所以这里没有"运行"按钮：编排的产物就是一份技能，由 DSH 自己去跑。
+
+   两条编排线：
+     · MCP 工具节点 —— 工具带 inputSchema，参数类型/个数能真正校验；
+     · 技能节点 —— 技能**没有参数契约**（只有 name/description），
+       所以它的 I/O 只能由人声明，校验的是"人写的声明"而不是技能本身。
+   ================================================================== */
+
+/* ---------- 工具 schema：结构化解析，**不看 schemaTruncated** ----------
+   插件的 tool-catalog-cache 会主动剥掉 default/example/examples/const 这些元信息键，
+   剥掉就置 schemaTruncated=true —— 所以这个标志的意思是"元信息被裁剪过"，
+   **不是**"schema 坏了"。实测 render_point 被标 truncated，schema 却完整。
+   据此把节点禁掉会误伤一大片工具（31 个里有 11 个带这个标志）。 */
+function orchSchemaOf(tool) {
+  const s = tool && tool.inputSchema;
+  if (!s || typeof s !== 'object') return { props: {}, required: [], ok: false };
+  const props = (s.properties && typeof s.properties === 'object') ? s.properties : {};
+  const required = Array.isArray(s.required) ? s.required.filter(x => typeof x === 'string') : [];
+  return { props, required, ok: Object.keys(props).length > 0, schema: s };
+}
+/** 取参数的 JSON Schema 类型（可能缺失，也可能联合类型数组）。 */
+function orchTypeOf(prop) {
+  if (!prop || typeof prop !== 'object') return '';
+  const t = prop.type;
+  if (Array.isArray(t)) return t.filter(x => x !== 'null').join('|');
+  if (typeof t === 'string') return t;
+  if (prop.anyOf || prop.oneOf) {
+    const arr = prop.anyOf || prop.oneOf;
+    return arr.map(x => (x && x.type) || '?').filter(x => x !== 'null').join('|');
+  }
+  if (prop.enum) return 'enum';
+  if (prop.items) return 'array';
+  return '';
+}
+/** 类型兼容判定：返回 'ok' | 'warn'（可强转）| 'bad'。 */
+function orchCompat(srcType, dstType) {
+  const a = String(srcType || '').split('|')[0];
+  const b = String(dstType || '').split('|')[0];
+  if (!a || !b) return 'warn';                    // 任一侧没说类型 → 只能提醒
+  if (a === b) return 'ok';
+  if (a === 'integer' && b === 'number') return 'ok';
+  if (a === 'string' && (b === 'number' || b === 'integer' || b === 'boolean')) return 'warn';
+  if ((a === 'number' || a === 'integer' || a === 'boolean') && b === 'string') return 'warn';
+  if (a === 'array' && b === 'array') return 'ok';
+  if (a.startsWith('array') && b.startsWith('array')) return 'warn';
+  if (a === 'object' && b === 'string') return 'warn';   // 转 JSON 字符串，常见但有损
+  return 'bad';
+}
+
+/** 上游节点的输出类型。MCP 工具的 outputSchema 很少声明，所以顺序是：
+ *  用户手工声明的 outDecl（技能节点）→ outputSchema 里该字段 → 空（交给上层只提醒不报错）。 */
+function orchOutputType(node, field) {
+  if (!node) return '';
+  if (!field && node.outType) return String(node.outType);
+  const os = node.outputSchema;
+  if (os && typeof os === 'object' && field) {
+    const props = (os.properties && typeof os.properties === 'object') ? os.properties : {};
+    if (props[field]) return orchTypeOf(props[field]);
+  }
+  if (node.kind === 'skill' && node.outDecl && field) return '';  // 技能输出由人声明，无结构化类型
+  return '';
+}
+
+/* ---------- 逐条连线的匹配详情 ----------
+   为什么单独算：orchValidate 返回的是一堆中文字符串，看不出"这句错是哪条线造成的"。
+   画布要给**每条连线**标状态（绿/黄/红/灰）、悬停还要说清"哪个字段 → 哪个参数、两侧什么类型"，
+   所以这里按 edge 单独算一份结构化结果。
+   返回 Map<'from→to', { state, binds:[{ key, dstType, srcType, srcField, level }] }>
+     state: 'ok' 有绑定且类型匹配 · 'warn' 有绑定但类型需转换/无法核对
+            'bad' 有绑定但类型不匹配 · 'idle' 这条线没被任何参数使用 · 'bad-edge' 指向不存在的节点 */
+function orchEdgeCheck(nodes, edges) {
+  const byId = new Map(nodes.map(n => [n.id, n]));
+  const map = new Map();
+  const keyOf = (e) => e.from + '→' + e.to;
+
+  for (const e of edges) {
+    const a = byId.get(e.from), b = byId.get(e.to);
+    if (!a || !b) { map.set(keyOf(e), { state: 'bad-edge', binds: [] }); continue; }
+    const sc = orchSchemaOf(b);
+    const binds = [];
+    for (const [k, arg] of Object.entries(b.args || {})) {
+      if (!arg || arg.source !== 'upstream') continue;
+      if (arg.fromNode !== e.from) continue;      // 这个参数取自别的节点，不算在这条线上
+      const dstT = orchTypeOf((sc.props || {})[k] || {});
+      const srcT = orchOutputType(a, arg.fromField) || arg.fromType || '';
+      let level = 'idle';
+      if (srcT && dstT) {
+        const c = orchCompat(srcT, dstT);
+        level = c === 'ok' ? 'ok' : c === 'warn' ? 'warn' : 'bad';
+      } else if (dstT || srcT) {
+        level = 'warn';   // 有一侧类型缺失 → 核对不了，只能提醒
+      }
+      binds.push({ key: k, dstType: dstT, srcType: srcT, srcField: arg.fromField || '', level });
+    }
+    let state = 'idle';
+    if (binds.length) {
+      state = binds.some(x => x.level === 'bad') ? 'bad'
+        : binds.some(x => x.level === 'warn') ? 'warn'
+        : binds.every(x => x.level === 'ok') ? 'ok' : 'ok';
+      // 全都没类型可比对（双侧都缺）时不算"匹配"，退化成提醒
+      if (binds.every(x => x.level === 'idle')) state = 'warn';
+    }
+    map.set(keyOf(e), { state, binds });
+  }
+  return map;
+}
+
+/* ---------- 三层校验 ----------
+   ① 必填 / 参数名：漏填必填、传了 schema 里不存在的参数名
+   ② 类型匹配：上游输出类型 vs 下游输入类型
+   ③ 值来源：每个参数必须是 常量 / 上游输出 / 运行时输入 之一
+   返回 { errors:[], warns:[] }，元素是给人看的中文。 */
+function orchValidate(nodes, edges) {
+  const errors = [], warns = [];
+  if (!nodes.length) return { errors: ['编排里还没有任何节点'], warns };
+
+  const byId = new Map(nodes.map(n => [n.id, n]));
+  const incoming = new Map(nodes.map(n => [n.id, []]));
+  let badEdge = 0;
+
+  for (const e of edges) {
+    if (!byId.has(e.from) || !byId.has(e.to)) { badEdge++; continue; }
+    if (e.from === e.to) { errors.push('「' + orchLabel(byId.get(e.from)) + '」连到了自己'); continue; }
+    incoming.get(e.to).push(e);
+  }
+  if (badEdge) errors.push('有 ' + badEdge + ' 条连线指向不存在的节点（画布可能没刷新，重画一次）');
+
+  // 环检测（自环已排除，这里找长度 ≥2 的环）
+  const color = new Map(nodes.map(n => [n.id, 0]));
+  const adj = new Map(nodes.map(n => [n.id, []]));
+  for (const e of edges) if (byId.has(e.from) && byId.has(e.to) && e.from !== e.to) adj.get(e.from).push(e.to);
+  let cyc = false;
+  const walk = (id) => {
+    color.set(id, 1);
+    for (const nx of adj.get(id) || []) {
+      if (color.get(nx) === 1) { cyc = true; return; }
+      if (color.get(nx) === 0) { walk(nx); if (cyc) return; }
+    }
+    color.set(id, 2);
+  };
+  for (const n of nodes) { if (color.get(n.id) === 0) { walk(n.id); if (cyc) break; } }
+  if (cyc) errors.push('连线成环了 —— 编排必须是有向无环的（循环请写在技能正文里，不要用连线表达）');
+
+  const order = orchTopo(nodes, edges);
+  const orderIdx = new Map(order.map((n, i) => [n.id, i]));
+
+  for (const n of nodes) {
+    const label = orchLabel(n);
+    const sc = orchSchemaOf(n);
+    const args = (n.args && typeof n.args === 'object') ? n.args : {};
+    const consumed = new Set();
+    const upstreamFields = new Set();
+
+    for (const e of incoming.get(n.id) || []) {
+      if (Array.isArray(e.srcFields)) e.srcFields.forEach(f => upstreamFields.add(f));
+      // 上游必须排在本节点之前
+      if (orderIdx.get(e.from) >= orderIdx.get(n.id)) {
+        errors.push('「' + label + '」的上游「' + orchLabel(byId.get(e.from)) + '」排在了它后面，无法取到输出');
+      }
+    }
+
+    for (const [k, a] of Object.entries(args)) {
+      const src = a && a.source;
+      // ① 参数名必须真实存在（除非技能节点 —— 技能没有 schema，名字由人声明）
+      if (n.kind !== 'skill' && sc.ok && !Object.prototype.hasOwnProperty.call(sc.props, k)) {
+        errors.push('「' + label + '」没有参数 `' + k + '`（可能是拼写错误）');
+        continue;
+      }
+      // ③ 值来源
+      if (src !== 'const' && src !== 'upstream' && src !== 'runtime') {
+        errors.push('「' + label + '」的参数 `' + k + '` 没指定来源');
+        continue;
+      }
+      if (src === 'upstream') {
+        if (!a.fromNode) { errors.push('「' + label + '」的参数 `' + k + '` 选了"上游输出"但没指定哪个节点'); continue; }
+        const up = byId.get(a.fromNode);
+        if (!up) { errors.push('「' + label + '」的参数 `' + k + '` 指向了一个不存在的上游节点'); continue; }
+        if (!(incoming.get(n.id) || []).some(e => e.from === a.fromNode)) {
+          warns.push('「' + label + '」的参数 `' + k + '` 取自「' + orchLabel(up) + '」，但两者之间没有连线');
+        }
+        // ② 类型匹配
+        const dst = sc.props[k] || {};
+        const dstT = orchTypeOf(dst);
+        /* 上游输出类型：优先用工具声明的 outputSchema；没声明就按 a.fromType（用户选的字段类型）；
+           再没有就留空 → 只提醒"无法核对"，不误判成错误。 */
+        const srcT = orchOutputType(up, a.fromField) || a.fromType || '';
+        if (srcT && dstT) {
+          const c = orchCompat(srcT, dstT);
+          if (c === 'bad') errors.push('类型不匹配：「' + label + '」的 `' + k + '` 要 ' + dstT + '，但「' + orchLabel(up) + '」给出的是 ' + srcT);
+          else if (c === 'warn') warns.push('类型可能要转换：「' + orchLabel(up) + '」的 ' + srcT + ' → 「' + label + '」的 `' + k + '`（要 ' + dstT + '）');
+        } else if (dstT && !srcT) {
+          warns.push('「' + orchLabel(up) + '」没声明输出类型，无法核对 `' + k + '`（要 ' + dstT + '）');
+        }
+      }
+      if (src === 'const') {
+        const v = a.value;
+        if (v === undefined || v === null || v === '') {
+          warns.push('「' + label + '」的参数 `' + k + '` 是固定值但还没填');
+        } else if (n.kind !== 'skill') {
+          const dstT = orchTypeOf(sc.props[k] || {});
+          const av = Array.isArray(v) ? 'array' : (typeof v === 'number' ? 'number' : typeof v === 'boolean' ? 'boolean' : 'string');
+          const c = orchCompat(av, dstT);
+          if (c === 'bad') errors.push('固定值类型不对：「' + label + '」的 `' + k + '` 要 ' + dstT + '，填的是 ' + av);
+          else if (c === 'warn') warns.push('固定值可能要被转换：「' + label + '」的 `' + k + '` 要 ' + dstT + '，填的是 ' + av + '（按字符串传）');
+        }
+      }
+      consumed.add(k);
+    }
+
+    // ① 必填项
+    if (n.kind !== 'skill' && sc.ok) {
+      for (const r of sc.required) if (!consumed.has(r)) errors.push('「' + label + '」缺少必填参数 `' + r + '`');
+    }
+    // 技能节点：没有 schema，只在画布上提示（不算错误）
+    if (n.kind === 'skill' && !sc.ok && !Object.keys(args).length) {
+      warns.push('「' + label + '」是技能节点，没有参数声明 —— 技能不自带参数契约，建议手工声明它的输入输出');
+    }
+  }
+  return { errors, warns };
+}
+function orchLabel(n) {
+  if (!n) return '?';
+  return String(n.title || n.tool || n.label || n.id || '?');
+}
+/** 与后端 topoOrder 同一套逻辑（这里只用来排序展示与前后关系判断）。 */
+function orchTopo(nodes, edges) {
+  const ids = nodes.map(n => n.id);
+  const indeg = new Map(ids.map(i => [i, 0]));
+  const adj = new Map(ids.map(i => [i, []]));
+  for (const e of edges) {
+    if (!indeg.has(e.from) || !indeg.has(e.to) || e.from === e.to) continue;
+    adj.get(e.from).push(e.to);
+    indeg.set(e.to, indeg.get(e.to) + 1);
+  }
+  const q = ids.filter(i => indeg.get(i) === 0);
+  const out = [];
+  while (q.length) {
+    const id = q.shift();
+    out.push(nodes.find(n => n.id === id));
+    for (const nx of adj.get(id)) { indeg.set(nx, indeg.get(nx) - 1); if (indeg.get(nx) === 0) q.push(nx); }
+  }
+  if (out.length < nodes.length) {
+    const seen = new Set(out.map(n => n.id));
+    for (const n of nodes) if (!seen.has(n.id)) out.push(n);
+  }
+  return out;
+}
+
+/* ---------- 后端接口 ---------- */
+function orchCwd() { return (currentSession() && currentSession().cwd) || ''; }
+/** 本次请求要带的 cwd：按优先级排队，后端会依次解析出项目根并逐个找。
+ *  ⚠ 为什么要多个：编排的落点 = "某个 cwd 向上找最近的 .git"。会话 cwd 是主依据，
+ *  但会话可能已经切走 / cwd 为空，而编排其实记在前一个项目里 —— 只送一个 cwd 时，
+ *  表现就是"下拉里看得见、点开却说找不到这个编排"。后端按顺序试，命中即用。
+ *  写操作（存草稿 / 导出）仍以第一个为准，避免"存到别处去"。 */
+function orchCwdList() {
+  const out = [];
+  const push = (v) => { const s = String(v || '').trim(); if (s && !out.includes(s)) out.push(s); };
+  push(orchCwd());
+  try {
+    const all = (State.sessions || []).filter(s => s && s.cwd).slice(0, 8);
+    all.forEach(s => push(s.cwd));
+  } catch {}
+  return out;
+}
+async function orchApi(method, sub, body) {
+  let r;
+  /* 读操作可以带多个 cwd（后端逐个找）；写操作只认第一个，免得存到别的项目里去。 */
+  const isWrite = method !== 'GET';
+  const cwds = isWrite ? [orchCwd()].filter(Boolean) : orchCwdList();
+  const qs = (cwds.length ? (sub.includes('?') ? '&' : '?')
+    + cwds.map(c => 'cwd=' + encodeURIComponent(c)).join('&') : '');
+  try {
+    r = await fetch('/api/local/orch' + (sub || '') + qs, { method, cache: 'no-store',
+      headers: body !== undefined ? { 'content-type': 'application/json' } : {},
+      body: body !== undefined ? JSON.stringify(body) : undefined });
+  } catch (e) { return { ok: false, error: '无法连接控制台后端: ' + e.message }; }
+  try { return await r.json(); } catch { return { ok: false, error: '控制台返回异常（HTTP ' + r.status + '）' }; }
+}
+
+/* ---------- 加载器 ---------- */
+async function orchLoadList(force) {
+  const O = State.orch;
+  if (!force && O.loaded) return;
+  const r = await orchApi('GET', '');
+  if (r.ok) {
+    /* items 现在含两类：origin:'draft'（.dsh/orchestrations 下的草稿）
+       与 origin:'skill'（已导出技能目录里的 orchestration.json）—— 后者就是"再次编排"的入口。 */
+    O.items = r.items || []; O.projectRoot = r.projectRoot || ''; O.skillRoot = r.skillRoot || ''; O.dir = r.dir || '';
+    O.loaded = true;
+  } else { O.items = O.items || []; O.loaded = true; if (r.error) O.poolErr = r.error; }
+}
+/** 节点仓库：MCP 工具来自插件 toolExplorer（实时，非快照）。
+ *  一次把所有工具拉全（当前就几十个），在**本地按服务分组过滤** ——
+ *  比每次切服务都打一次插件接口稳，也不会把「工具数」显示成当前筛选后的数量。
+ *  左栏默认只列当前选中服务（O.conn）下的工具；O.conn==='' 表示全部服务。 */
+async function orchLoadPool(force) {
+  const O = State.orch;
+  if (O.poolKind !== 'mcp') return;
+  if (!force && O.poolAll && skmgFresh(O.poolAt, 30000)) return;
+  O.poolLoading = true;
+  const p = await fetch('/api/mcpc-status').then(r => r.json()).catch(() => ({}));
+  if (!p.available) {
+    O.poolAll = []; O.pool = []; O.conns = []; O.poolErr = '未安装 MCP 连接器插件（可选）';
+    O.poolAt = Date.now(); O.poolLoading = false; return;
+  }
+  const r = await mcpcApi('toolExplorer', { query: '', offset: 0, limit: 500 });
+  if (!r.ok) {
+    O.poolAll = O.poolAll || []; O.pool = O.pool || [];
+    O.poolErr = r.message || '工具列表读取失败'; O.poolAt = Date.now(); O.poolLoading = false; return;
+  }
+  const d = r.detail || {};
+  O.poolAll = d.items || [];
+  O.poolTotal = d.total || O.poolAll.length;
+  /* 可选服务 = 插件给的连接清单（detail.connections）。
+     它带 connectionName / serverName / toolCount，比从工具里反推更准（含 0 工具的连接）。 */
+  O.conns = (d.connections || []).map(c => ({
+    key: c.connectionKey || '', name: c.connectionName || c.serverName || c.connectionKey || '(未命名)',
+    connector: c.connectorName || c.connectorId || '', server: c.serverName || '',
+    transport: c.transport || '', status: c.status || '', toolCount: c.toolCount || 0, stale: !!c.stale,
+  }));
+  /* 连接清单缺失时退化成"从工具反推"，至少能分组 */
+  if (!O.conns.length) {
+    const agg = new Map();
+    for (const t of O.poolAll) {
+      const k = t.connectionKey || t.connectorId || '';
+      if (!agg.has(k)) agg.set(k, { key: k, name: (t.connection && t.connection.connectionName) || t.serverName || k, connector: t.connectorId || '', server: t.serverName || '', toolCount: 0 });
+      agg.get(k).toolCount++;
+    }
+    O.conns = [...agg.values()];
+  }
+  // 当前选中服务失效（连接被删 / 换了项目）→ 回落到"全部"
+  if (O.conn && !O.conns.some(c => c.key === O.conn)) O.conn = '';
+  orchApplyPoolFilter();
+  O.poolErr = ''; O.poolAt = Date.now(); O.poolLoading = false;
+}
+/** 按当前服务 + 关键词，从 poolAll 里算出左栏要显示的工具。 */
+function orchApplyPoolFilter() {
+  const O = State.orch;
+  const kw = (O.poolKw || '').trim().toLowerCase();
+  O.pool = (O.poolAll || []).filter(t => {
+    if (O.conn && (t.connectionKey || t.connectorId || '') !== O.conn) return false;
+    if (!kw) return true;
+    return String(t.name || '').toLowerCase().includes(kw)
+      || String(t.title || '').toLowerCase().includes(kw)
+      || String(t.description || '').toLowerCase().includes(kw);
+  });
+}
+/** 切 MCP 服务（下拉的 onchange）：只改本地筛选，不打接口。
+ *  ⚠ 参数是 <select> 的 value（"" = 全部服务），不做"再点一次取消"的开关语义 ——
+ *  下拉框天然有"全部服务"这一项，toggle 语义会让用户莫名其妙。 */
+function orchSetConn(key) {
+  const O = State.orch;
+  O.conn = key || '';
+  orchApplyPoolFilter();
+  render({ paintOnly: true });
+}
+let ORCH_POOL_TIMER = null;
+function orchPoolDebounce() {
+  clearTimeout(ORCH_POOL_TIMER);
+  ORCH_POOL_TIMER = setTimeout(() => { orchApplyPoolFilter(); render({ paintOnly: true }); }, 200);
+}
+
+/* ---------- 画布动作（纯客户端状态 → paintOnly） ---------- */
+/** 把工具加进画布。⚠ **必须把 inputSchema 一起存进节点** ——
+ *  画布上只存了 tool 名字的话，参数面板与校验器就无从知道这个工具要哪些参数。
+ *  列表接口（toolExplorer）不返回 schema，所以这里要用工具名去补一次 toolDetail。 */
+function orchAddTool(name, connectorId, serverName, title, inputSchema) {
+  const O = State.orch;
+  const node = {
+    id: 'n' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5),
+    kind: 'mcp', tool: name, title: title || name,
+    connector: connectorId || '', server: serverName || '',
+    inputSchema: inputSchema || null,
+    x: 60 + (O.nodes.length % 4) * 250, y: 40 + Math.floor(O.nodes.length / 4) * 150,
+    args: {},
+  };
+  O.nodes.push(node);
+  O.sel = node.id;
+  O.lastCheck = orchValidate(O.nodes, O.edges);
+  render({ paintOnly: true });
+  if (!inputSchema) orchHydrateSchema(node.id, connectorId, serverName);
+}
+/** 补 schema：列表接口不带 inputSchema，点详情接口拿一次并存回节点。
+ *  拿到后预填必填参数的"来源"（默认运行时输入），省掉用户逐个点下拉。 */
+async function orchHydrateSchema(nodeId, connectorId, serverName) {
+  const node = State.orch.nodes.find(n => n.id === nodeId);
+  if (!node) return;
+  const r = await mcpcApi('toolDetail', {
+    toolName: node.tool,
+    connectorId: connectorId || undefined,
+    serverName: serverName || undefined,
+  });
+  const cur = State.orch.nodes.find(n => n.id === nodeId);
+  if (!cur) return;   // 请求期间节点可能已被删掉
+  if (r && r.ok && r.detail && r.detail.tool && r.detail.tool.inputSchema) {
+    cur.inputSchema = r.detail.tool.inputSchema;
+    const sc = orchSchemaOf(cur);
+    for (const req of sc.required) {
+      if (!cur.args[req]) cur.args[req] = { source: 'runtime' };
+    }
+  } else {
+    cur.schemaErr = (r && (r.message || r.error)) || '参数说明读取失败';
+  }
+  State.orch.lastCheck = orchValidate(State.orch.nodes, State.orch.edges);
+  render({ paintOnly: true });
+}
+/** 拖入技能节点：技能没有参数契约，参数由人声明。 */
+function orchAddSkill(name, description) {
+  const O = State.orch;
+  const node = {
+    id: 'n' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5),
+    kind: 'skill', tool: name, title: name,
+    x: 60 + (O.nodes.length % 4) * 250, y: 40 + Math.floor(O.nodes.length / 4) * 150,
+    note: description || '', args: {},
+  };
+  O.nodes.push(node);
+  O.sel = node.id;
+  O.lastCheck = orchValidate(O.nodes, O.edges);
+  render({ paintOnly: true });
+}
+function orchDelNode(id) {
+  const O = State.orch;
+  O.nodes = O.nodes.filter(n => n.id !== id);
+  O.edges = O.edges.filter(e => e.from !== id && e.to !== id);
+  if (O.sel === id) O.sel = null;
+  O.lastCheck = orchValidate(O.nodes, O.edges);
+  render({ paintOnly: true });
+}
+function orchDelEdge(idx) {
+  const O = State.orch;
+  O.edges.splice(idx, 1);
+  O.lastCheck = orchValidate(O.nodes, O.edges);
+  render({ paintOnly: true });
+}
+function orchSelect(id) { State.orch.sel = id; render({ paintOnly: true }); }
+/** 切「MCP 工具 / 已有技能」页签。切回 MCP 时按 TTL 补一次数据（不强制刷新）。 */
+function orchPickKind(k) {
+  const O = State.orch;
+  O.poolKind = k;
+  render({ paintOnly: true });
+  if (k === 'mcp') orchLoadPool(false).then(() => render({ paintOnly: true }));
+}
+/** 顶部校验徽标：点一下先把参数面板收起（这样右栏下半部的校验结果就完整可见），
+ *  再滚到它所在位置。比"点节点就看不到校验结果"的旧行为好找。 */
+function orchFocusCheck() {
+  State.orch.sel = null;
+  State.orch.metaOpen = false;
+  render({ paintOnly: true });
+  const el = document.getElementById('orchcheck');
+  if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' });
+}
+/** 取上游的哪个字段（不选 = 整份输出）。字段类型一并记下，供校验与展示使用。 */
+function orchArgField(nodeId, key, field) {
+  const O = State.orch;
+  const n = O.nodes.find(x => x.id === nodeId);
+  if (!n) return;
+  if (!n.args[key]) n.args[key] = { source: 'upstream' };
+  if (field) {
+    n.args[key].fromField = field;
+    const up = O.nodes.find(x => x.id === n.args[key].fromNode);
+    const os = up && up.outputSchema;
+    const props = (os && os.properties) || {};
+    const t = props[field] ? orchTypeOf(props[field]) : '';
+    if (t) n.args[key].fromType = t; else delete n.args[key].fromType;
+  } else {
+    delete n.args[key].fromField; delete n.args[key].fromType;
+  }
+  O.lastCheck = orchValidate(O.nodes, O.edges);
+  render({ paintOnly: true });
+}
+/** 参数来源：常量 / 上游输出 / 运行时输入 三选一。 */
+function orchArgSource(nodeId, key, src) {
+  const O = State.orch;
+  const n = O.nodes.find(x => x.id === nodeId);
+  if (!n) return;
+  if (!n.args) n.args = {};
+  if (!n.args[key]) n.args[key] = {};
+  n.args[key].source = src;
+  if (src === 'const' && n.args[key].value === undefined) n.args[key].value = '';
+  if (src === 'runtime') { delete n.args[key].value; delete n.args[key].fromNode; }
+  O.lastCheck = orchValidate(O.nodes, O.edges);
+  render({ paintOnly: true });
+}
+function orchArgValue(nodeId, key, val) {
+  const O = State.orch;
+  const n = O.nodes.find(x => x.id === nodeId);
+  if (!n) return;
+  if (!n.args[key]) n.args[key] = { source: 'const' };
+  n.args[key].value = val;
+  O.lastCheck = orchValidate(O.nodes, O.edges);
+  render({ paintOnly: true });
+}
+function orchArgFrom(nodeId, key, fromNode) {
+  const O = State.orch;
+  const n = O.nodes.find(x => x.id === nodeId);
+  if (!n) return;
+  if (!n.args[key]) n.args[key] = {};
+  n.args[key].source = 'upstream';
+  n.args[key].fromNode = fromNode;
+  O.lastCheck = orchValidate(O.nodes, O.edges);
+  render({ paintOnly: true });
+}
+/** 连线：拖到目标节点上即建立一条边，并把下游**尚未设置来源**的必填参数
+ *  自动绑到上游输出 —— 光画条线却什么都不接，用户会以为已经连好了。
+ *  已经显式设过来源的参数不动（那是用户的决定）。 */
+function orchLink(fromId, toId) {
+  const O = State.orch;
+  if (!fromId || !toId || fromId === toId) return;
+  if (O.edges.some(e => e.from === fromId && e.to === toId)) return;
+  if (O.edges.some(e => e.from === toId && e.to === fromId)) {
+    UI.err('这两个节点之间已经有反向连线了，再加一条就成环');
+    return;
+  }
+  O.edges.push({ from: fromId, to: toId });
+  const down = O.nodes.find(x => x.id === toId);
+  if (down) {
+    const sc = orchSchemaOf(down);
+    if (sc.ok) {
+      for (const req of sc.required) {
+        const cur = down.args[req];
+        /* 自动绑定的边界：没设过 → 绑；还是默认的 runtime 占位 → 也绑
+           （这是在补 schema 时自动填的，不是用户的选择）；
+           用户显式设过 const / upstream → 尊重，不动。 */
+        if (!cur || cur.source === 'runtime') down.args[req] = { source: 'upstream', fromNode: fromId };
+      }
+    }
+  }
+  O.lastCheck = orchValidate(O.nodes, O.edges);
+  render({ paintOnly: true });
+}
+
+/* ---------- 拖拽（原生鼠标事件；HTML5 DnD 在画布里反而难用） ---------- */
+function orchNodeDown(ev, id) {
+  if (ev.button !== 0) return;
+  const O = State.orch;
+  const n = O.nodes.find(x => x.id === id);
+  if (!n) return;
+  ev.preventDefault(); ev.stopPropagation();
+  O.sel = id;
+  O.dragging = { id, dx: ev.clientX - n.x, dy: ev.clientY - n.y };
+  render({ paintOnly: true });
+}
+function orchCanvasMove(ev) {
+  const O = State.orch;
+  if (O.dragging) {
+    const n = O.nodes.find(x => x.id === O.dragging.id);
+    if (!n) return;
+    n.x = Math.max(0, ev.clientX - O.dragging.dx);
+    n.y = Math.max(0, ev.clientY - O.dragging.dy);
+    // 直接改 DOM 位置，避免拖动过程中重绘抢焦点
+    const el = document.querySelector('[data-orch-node="' + n.id + '"]');
+    if (el) { el.style.left = n.x + 'px'; el.style.top = n.y + 'px'; orchRedrawWires(); }
+    return;
+  }
+  if (O.linking) {
+    const host = document.getElementById('orchcanvas');
+    if (!host) return;
+    const r = host.getBoundingClientRect();
+    O.linkAt = { x: ev.clientX - r.left + host.scrollLeft, y: ev.clientY - r.top + host.scrollTop };
+    orchRedrawWires();
+  }
+}
+function orchCanvasUp() {
+  const O = State.orch;
+  if (O.dragging || O.linking) { O.dragging = null; O.linking = null; O.linkFrom = null; O.linkAt = null; render({ paintOnly: true }); }
+}
+function orchWireDown(ev, id) {
+  ev.preventDefault(); ev.stopPropagation();
+  const O = State.orch;
+  const host = document.getElementById('orchcanvas');
+  const r = host ? host.getBoundingClientRect() : { left: 0, top: 0 };
+  const el = document.querySelector('[data-orch-node="' + id + '"]');
+  O.linking = true;
+  O.linkFrom = id;
+  O.linkAt = { x: ev.clientX - r.left + (host ? host.scrollLeft : 0), y: ev.clientY - r.top + (host ? host.scrollTop : 0) };
+  if (el) el.classList.add('orch-linking');
+}
+function orchWireUp(ev, id) {
+  const O = State.orch;
+  if (!O.linking) return;
+  ev.preventDefault(); ev.stopPropagation();
+  const from = O.linkFrom;
+  O.linking = null; O.linkFrom = null; O.linkAt = null;
+  orchLink(from, id);
+}
+/** 只重画连线层（节点位置拖拽中每帧都调，不能走整页重绘）。 */
+function orchRedrawWires() {
+  const O = State.orch;
+  const svg = document.getElementById('orchwires');
+  if (!svg) return;
+  const W = 200, H = 60;   // 与 CSS 里的节点尺寸保持一致
+  const eh = orchEdgeCheck(O.nodes, O.edges);
+  const seg = [];
+  for (const e of O.edges) {
+    const a = O.nodes.find(n => n.id === e.from), b = O.nodes.find(n => n.id === e.to);
+    if (!a || !b) continue;
+    const st = (eh.get(e.from + '→' + e.to) || {}).state || 'idle';
+    seg.push(orchWirePath(a.x + W, a.y + H / 2, b.x, b.y + H / 2, 'orch-wire st-' + st));
+  }
+  if (O.linking && O.linkFrom && O.linkAt) {
+    const a = O.nodes.find(n => n.id === O.linkFrom);
+    if (a) seg.push(orchWirePath(a.x + W, a.y + H / 2, O.linkAt.x, O.linkAt.y, 'orch-wire orch-wire-drag'));
+  }
+  svg.innerHTML = seg.join('');
+}
+/** 连线的 d 属性（单独抽出来，因为"可见的线"和"命中区"是两条同形状的 path）。 */
+function orchPathD(x1, y1, x2, y2) {
+  const dx = Math.max(40, Math.abs(x2 - x1) * 0.5);
+  return 'M ' + x1 + ' ' + y1 + ' C ' + (x1 + dx) + ' ' + y1 + ', ' + (x2 - dx) + ' ' + y2 + ', ' + x2 + ' ' + y2;
+}
+function orchWirePath(x1, y1, x2, y2, cls) {
+  return '<path class="' + cls + '" d="' + orchPathD(x1, y1, x2, y2) + '" />';
+}
+/** 连线的悬停说明："这条线上到底传了什么、类型匹不匹配"。
+ *  没有绑定的连线也要说清楚 —— 光画条线不接参数是最常见的困惑点。 */
+function orchEdgeTip(e, info, nodes) {
+  const a = (nodes || []).find(n => n.id === e.from), b = (nodes || []).find(n => n.id === e.to);
+  const na = a ? (a.title || a.tool) : e.from, nb = b ? (b.title || b.tool) : e.to;
+  const lines = [na + '  →  ' + nb];
+  const binds = (info && info.binds) || [];
+  if (!binds.length) {
+    lines.push('');
+    lines.push('这条连线目前没有被任何参数使用。');
+    lines.push('到右栏把「' + nb + '」的某个参数来源选成「上游输出」并指向「' + na + '」，它才会真正传值。');
+    return lines.join('\n');
+  }
+  for (const x of binds) {
+    const lv = x.level === 'ok' ? '✓ 类型匹配' : x.level === 'warn' ? '⚠ 类型需转换或无法核对' : x.level === 'bad' ? '✕ 类型不匹配' : '·';
+    lines.push(lv + '：' + (x.srcField ? x.srcField : '（整份输出）') + (x.srcType ? '（' + x.srcType + '）' : '')
+      + '  →  ' + x.key + (x.dstType ? '（' + x.dstType + '）' : ''));
+  }
+  return lines.join('\n');
+}
+
+/* ---------- 保存 / 导出 ---------- */
+function orchDoc() {
+  const O = State.orch;
+  return {
+    name: O.name, title: O.title || O.name, description: O.description,
+    whenToUse: O.whenToUse || '', nodes: O.nodes, edges: O.edges,
+  };
+}
+async function orchSave(silent) {
+  const O = State.orch;
+  if (!O.nodes.length) { UI.err('编排里还没有节点'); return; }
+  const r = await orchApi('POST', '', { name: O.name, doc: orchDoc() });
+  if (!r.ok) { UI.err(r.error || '保存失败'); return; }
+  if (!silent) UI.ok('已保存草稿：' + r.file);
+  await orchLoadList(true);
+  render({ paintOnly: true });
+}
+async function orchOpen(name) {
+  const r = await orchApi('GET', '?name=' + encodeURIComponent(name));
+  if (!r.ok) { UI.err(r.error || '读取失败'); return; }
+  const d = r.doc || {};
+  const O = State.orch;
+  O.name = d.name || name; O.title = d.title || ''; O.description = d.description || '';
+  O.whenToUse = d.whenToUse || '';
+  O.nodes = Array.isArray(d.nodes) ? d.nodes : [];
+  O.edges = Array.isArray(d.edges) ? d.edges : [];
+  O.sel = O.nodes.length ? O.nodes[0].id : null;
+  O.lastCheck = orchValidate(O.nodes, O.edges);
+  UI.ok('已打开「' + O.name + '」' + (r.origin === 'skill' ? '（源在技能目录里）' : '（草稿）'));
+  render({ paintOnly: true });
+}
+/** 这个技能有没有可编辑的编排源（技能目录里的 orchestration.json）。
+ *  数据来自 /api/local/orch 的 items（后端会扫技能根下一层）。 */
+function orchHasSource(skillName) {
+  return (State.orch.items || []).some(it => it.origin === 'skill' && it.name === skillName && !it.broken);
+}
+/** 从「已安装」技能卡片点到编排页并打开它的源。
+ *  顺手把编排数据拉一次 —— 用户可能从没进过编排页，State.orch.items 还是空的。 */
+async function orchOpenFromSkill(skillName) {
+  if (!State.orch.items || !State.orch.items.length) await orchLoadList(true);
+  if (!orchHasSource(skillName)) {
+    UI.err('「' + skillName + '」里没有编排源（orchestration.json），可能是手工写的技能');
+    return;
+  }
+  State.skmg.tab = 'orch';
+  await orchOpen(skillName);
+}
+async function orchDelete(name) {
+  const ok = await UI.confirm({ title: '删除编排草稿', danger: true, okText: '删除',
+    message: '确定删除编排草稿「' + name + '」？只删草稿（.dsh/orchestrations 下的 JSON），已导出的技能不受影响。' });
+  if (!ok) return;
+  const r = await orchApi('DELETE', '?name=' + encodeURIComponent(name));
+  if (!r.ok) { UI.err(r.error || '删除失败'); return; }
+  UI.ok('已删除草稿「' + name + '」');
+  await orchLoadList(true);
+  render({ paintOnly: true });
+}
+async function orchNew() {
+  const ok = await UI.confirm({ title: '新建编排', okText: '新建',
+    message: '当前画布会被清空（未保存的改动会丢失）。继续？' });
+  if (!ok) return;
+  const O = State.orch;
+  O.name = 'my-orchestration'; O.title = ''; O.description = ''; O.whenToUse = '';
+  O.nodes = []; O.edges = []; O.sel = null; O.lastCheck = null;
+  render({ paintOnly: true });
+}
+/** 导出 SKILL.md。同名冲突时把选择权交回用户：覆盖 / 换名 / 取消。 */
+async function orchExport(overwrite) {
+  const O = State.orch;
+  const check = orchValidate(O.nodes, O.edges);
+  O.lastCheck = check;
+  if (check.errors.length) {
+    render({ paintOnly: true });
+    UI.err('还有 ' + check.errors.length + ' 处错误没解决，先修好再导出（右侧面板列出了具体问题）');
+    return;
+  }
+  if (!O.description.trim()) {
+    UI.err('请先填写「描述」—— DSH 要求 description 必填，留空会导致技能被静默丢弃');
+    return;
+  }
+  O.busy = true; render({ paintOnly: true });
+  const r = await fetch('/api/local/orch/export', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ doc: orchDoc(), cwd: orchCwd(), scope: O.scope || 'project', overwrite: !!overwrite }),
+  }).then(x => x.json()).catch(e => ({ ok: false, error: e.message }));
+  O.busy = false;
+  if (r.conflict) {
+    const go = await UI.confirm({ title: '同名技能已存在', danger: true, okText: '覆盖',
+      message: '「' + r.name + '」已存在于：\n' + r.file + '\n\n覆盖会替换该目录下的 SKILL.md 与 orchestration.json。继续？' });
+    if (go) return orchExport(true);
+    render({ paintOnly: true });
+    return;
+  }
+  if (!r.ok) { UI.err(r.error || '导出失败'); render({ paintOnly: true }); return; }
+  O.name = r.name;
+  UI.ok('已导出技能「' + r.name + '」→ ' + r.file);
+  await orchLoadList(true);
+  reloadSkillsScope();
+  render({ paintOnly: true });
+}
+
 /* ---------- 加载器（带 TTL；paintOnly 重绘不重跑） ---------- */
 const SKMG_LIST_TTL = 60000;   // 市场+已装清单：1min（全市场 6600+ 条，插件每次全量扫盘，别频繁打）
 const SKMG_EXEC_TTL = 30000;   // 执行器汇总：30s
 const SKMG_MKT_TTL = 15000;    // 市场仓库状态：15s
 function skmgFresh(at, ttl) { return at && Date.now() - at < ttl; }
 
-/** Skills 页加载器：探测插件可用性 → 清单（+ 当前页签的数据）。
- *  返回 true 让 render() 在数据到手后重绘一次。 */
+/** Skills 页加载器：探测插件可用性 → 按**当前页签**取数。
+ *  ⚠ 这里**绝不能**无条件拉 skmgLoadList()。那个接口是插件全量扫盘 + 序列化整个市场
+ *  （实测 ~7.4s / 2.37MB），而站点页签（本机配置 / 编排）根本不用它 ——
+ *  一进页面就白等 7 秒，表现就是"正在探测 Skills 管理插件…"卡好几秒。
+ *
+ *  ⚠ 默认页签是「已安装」，它确实需要那份清单（卡片和计数都靠它）——
+ *  但这不该在**首屏**同步等：先让页签栏出来（<1s），清单在后台补。
+ *  做法是把清单请求**不 await** 地挂出去，到货后 paintOnly 重绘一次。
+ *  轻量探测（/api/skmg-status，~0.4s）照样每次都跑，它很便宜。 */
 async function loadSkmg(force) {
   const M = State.skmg;
   if (M.available === null || force || !skmgFresh(M.probeAt, 30000)) {
@@ -3941,11 +4707,16 @@ async function loadSkmg(force) {
     M.probeAt = Date.now();
   }
   if (!M.available) return true;
-  await Promise.all([
-    skmgLoadList(force),
-    M.tab === 'exec' ? skmgLoadExecs(force) : Promise.resolve(),
-    M.tab === 'market' ? skmgLoadMarket(force) : Promise.resolve(),
-  ]);
+  /* 轻量接口：可以在首屏等 */
+  const quick = [];
+  if (M.tab === 'exec') quick.push(skmgLoadExecs(force));
+  if (M.tab === 'market') quick.push(skmgLoadMarket(force));
+  /* 重接口：不 await，到货后自己补一次重绘。
+     命中缓存（TTL 60s）时 skmgLoadList 会立刻返回，不会重复请求。 */
+  if (M.tab === 'installed' || M.tab === 'market') {
+    skmgLoadList(force).then(() => render({ paintOnly: true })).catch(() => {});
+  }
+  await Promise.all(quick);
   return true;
 }
 async function skmgLoadList(force) {
@@ -4039,28 +4810,42 @@ function skmgTab(t) {
   if (t === 'exec') skmgLoadExecs().then(() => render({ paintOnly: true }));
   if (t === 'market') skmgLoadMarket().then(() => render({ paintOnly: true }));
   if (t === 'installed' || t === 'market') skmgLoadList().then(() => render({ paintOnly: true }));
+  if (t === 'orch') {
+    Promise.all([orchLoadList(true), orchLoadPool(false)]).then(() => {
+      const O = State.orch;
+      if (O.nodes.length && !O.lastCheck) O.lastCheck = orchValidate(O.nodes, O.edges);
+      render({ paintOnly: true });
+    });
+  }
 }
 
 Pages.skillMgr = () => {
   const M = State.skmg;
   const localCount = State.skillsScope ? (State.skillsScope.skills || []).length : null;
+  /* ⚠ 探测未完成（available === null）时也要**先把页签画出来**，只有"已安装/市场"
+     这两个依赖插件的页签才显示"探测中"。否则整个页面被一个 ~0.5s 的探测按住，
+     看到的就是"打开页面先卡一下"。站点页签（本机配置 / 编排）不依赖插件，直接可用。 */
+  const tab = (t, label, n) => '<button class="mcpc-tab' + (M.tab === t ? ' on' : '') + '" onclick="skmgTab(' + fmt.attr(t) + ')">' + label
+    + (n != null ? ' <span class="mcpc-n">' + n + '</span>' : '') + '</button>';
+  const needPlugin = M.tab === 'installed' || M.tab === 'market' || M.tab === 'exec';
   let body;
-  if (M.available === null) {
-    body = '<div class="card"><div class="empty"><span class="loading"></span> 正在探测 Skills 管理插件…</div></div>';
-  } else if (!M.available) {
+  if (M.available === null && needPlugin) {
+    body = '<div class="card"><div class="empty"><span class="loading"></span> 正在探测 Skills 管理插件…'
+      + '<div class="muted" style="font-size:12px;margin-top:8px">「本机配置」与「编排」不依赖插件，随时可用。</div></div></div>';
+  } else if (M.available === false && needPlugin) {
     body = skmgUnavailableHtml();
   } else {
-    const tab = (t, label, n) => '<button class="mcpc-tab' + (M.tab === t ? ' on' : '') + '" onclick="skmgTab(' + fmt.attr(t) + ')">' + label
-      + (n != null ? ' <span class="mcpc-n">' + n + '</span>' : '') + '</button>';
     body = '<div class="mcpc-tabs">'
       + tab('installed', '📦 已安装', M.list ? (M.list.installed || []).length : null)
       + tab('market', '🛍️ 市场', M.list ? (M.list.market || []).length : null)
       + tab('exec', '🗂️ 执行器', M.execs ? M.execs.length : null)
       + tab('local', '⚙️ 本机配置', localCount)
+      + tab('orch', '🧬 编排', State.orch.nodes.length ? State.orch.nodes.length : null)
       + '</div>'
       + (M.tab === 'installed' ? skmgInstalledHtml()
         : M.tab === 'market' ? skmgMarketHtml()
         : M.tab === 'exec' ? skmgExecHtml()
+        : M.tab === 'orch' ? skmgOrchHtml()
         : skmgLocalHtml());
   }
   return `
@@ -4115,8 +4900,319 @@ function skmgInstalledHtml() {
     + '</div>'
     + '<div style="display:flex;gap:6px;margin-top:10px;justify-content:flex-end">'
     + '<button class="btn sm" onclick="skmgDetail(' + fmt.attr(s.name) + ')">详情</button>'
+    + (orchHasSource(s.name) ? '<button class="btn sm" onclick="orchOpenFromSkill(' + fmt.attr(s.name) + ')" title="这个技能是编排导出的，打开它的源回到画布继续编辑">🧬 编辑编排</button>' : '')
     + '<button class="btn sm danger" onclick="skmgDelete(' + fmt.attr(s.name) + ')">删除</button>'
     + '</div></div>').join('') + '</div>';
+}
+
+/** 页签五：技能编排（可视化画布 + 三层校验 + 导出 SKILL.md）
+ *  定位是"编辑器 + 校验器 + 代码生成器"—— 没有"运行"按钮：
+ *  产物本身就是一份技能，执行交给 DSH。
+ *
+ *  ⚠ 版面原则（2026-09-29 重构）：**画布优先**。元信息表单压成顶栏一行，
+ *  说明文字收进「?」气泡，草稿列表收进顶部下拉 —— 上面少占一点，画布就多一块。
+ *  三栏各自独立滚动，整页高度锁在视口内（.orch-grid 不再产生整页滚动条）。 */
+function skmgOrchHtml() {
+  const O = State.orch;
+  const chk = O.lastCheck || { errors: [], warns: [] };
+  const errN = chk.errors.length, warnN = chk.warns.length;
+  const sel = O.nodes.find(n => n.id === O.sel) || null;
+  const echeck = orchEdgeCheck(O.nodes, O.edges);
+
+  /* —— 顶部一行：名字 / 标题 / 描述 / 状态 / 动作 —— */
+  const bar = '<div class="orch-bar">'
+    + '<input class="orch-in" style="flex:0 1 190px" value="' + fmt.esc(O.name || '') + '"'
+    + ' placeholder="编排名（小写-连字符 → 技能目录名）" title="会成为技能目录名，必须是英文小写+连字符；中文名会被转成稳定短码"'
+    + ' oninput="State.orch.name=this.value">'
+    + '<input class="orch-in" style="flex:0 1 150px" value="' + fmt.esc(O.title || '') + '"'
+    + ' placeholder="显示标题（可中文）" oninput="State.orch.title=this.value">'
+    + '<input class="orch-in" style="flex:1 1 240px;min-width:160px" value="' + fmt.esc(O.description || '') + '"'
+    + ' placeholder="描述（必填，模型靠它决定何时用这个技能）" title="写进 SKILL.md 的 description；DSH 要求必填，留空技能会被静默丢弃"'
+    + ' oninput="State.orch.description=this.value">'
+    + '<button class="btn sm" onclick="State.orch.metaOpen=!State.orch.metaOpen;render({paintOnly:true})"'
+    + ' title="这个页签怎么用、导出到哪里">' + (O.metaOpen ? '✕ 收起' : '? 说明') + '</button>'
+    + '<span style="flex:1"></span>'
+    + '<button class="btn sm' + (errN ? '' : ' ok') + '" onclick="orchFocusCheck()"'
+    + ' title="点开看完整校验结果（右侧栏下半部）">'
+    + (errN ? '✕ ' + errN + ' 错' : '<span class="tag ok" style="border:0;padding:0">✓ 校验通过</span>')
+    + (warnN ? ' · ⚠ ' + warnN + ' 提醒' : '') + '</button>'
+    + '<span class="muted" style="font-size:11px;white-space:nowrap">' + O.nodes.length + ' 节点 · ' + O.edges.length + ' 连线</span>'
+    + '<button class="btn sm" onclick="orchNew()">✚ 新建</button>'
+    + '<button class="btn sm" onclick="orchSave()">💾 存草稿</button>'
+    + '<button class="btn sm primary" onclick="orchExport()"' + (O.busy ? ' disabled' : '') + '>⬇ 导出技能</button>'
+    + '</div>'
+    /* 已保存的编排：收成一行下拉，不占画布高度 */
+    + '<div class="orch-bar2">'
+    + '<span class="muted" style="font-size:11.5px">已保存的编排</span>'
+    /* ⚠ option 的 value= 是 HTML 属性，只能 fmt.h —— 用 fmt.attr 会写出
+       value="&quot;abc&quot;"，浏览器解析出来的名字带一对引号，orchOpen 必定找不到。 */
+    + '<select class="orch-in" style="flex:0 1 260px" onchange="orchOpen(this.value);this.selectedIndex=0">'
+    + '<option value="">— 选一个继续编辑（' + ((O.items || []).length) + ' 个）—</option>'
+    + (O.items || []).map(it => '<option value="' + fmt.h(it.broken ? '' : it.name) + '"'
+      + (it.broken ? ' disabled' : '') + '>'
+      + (it.broken ? '⚠ 损坏：' : it.origin === 'skill' ? '📦 已导出：' : '📝 草稿：')
+      + fmt.esc(it.title || it.name) + (it.broken ? '' : '（' + it.nodeCount + ' 节点）') + '</option>').join('')
+    + '</select>'
+    + (O.projectRoot
+      ? '<span class="muted mono" style="font-size:10.5px;margin-left:6px">技能根 ' + fmt.esc(O.skillRoot || '') + '</span>'
+      : '<span class="muted" style="font-size:11px">（等会话工作目录就绪）</span>')
+    + '</div>'
+    /* 「?」气泡：原来钉在上方的一段说明，改成按需展开 —— 默认不占高度 */
+    + (O.metaOpen
+      ? '<div class="card" style="padding:10px 14px;margin-top:8px;font-size:12px;line-height:1.75">'
+        + '<b>这个页签是什么</b>：把若干 MCP 工具 / 已有技能画成一张有向无环图，导出一份 <code>SKILL.md</code>。'
+        + '控制台只做「画图 + 校验 + 生成」，<b>不执行编排</b> —— 产物本身就是技能，执行交给 DSH。<br>'
+        + '<b>产物落在哪</b>：<code>' + fmt.esc(O.skillRoot || '&lt;项目根&gt;/.dsh/skills') + '/&lt;编排名&gt;/</code> 下的 '
+        + '<code>SKILL.md</code>（给模型读）+ <code>orchestration.json</code>（源文件，用于再次编排）。<br>'
+        + '<b>再次编排</b>：顶部下拉里，<b>📦 已导出</b> 的就是技能目录自带的源；左栏「已有技能」里带源的也有「编辑编排」入口。<br>'
+        + '<b>项目根</b>：<span class="mono">' + fmt.esc(O.projectRoot || '—') + '</span>（由当前会话工作目录向上找最近的 <code>.git</code>）'
+        + (O.dir ? '<br><b>草稿目录</b>：<span class="mono">' + fmt.esc(O.dir) + '</span>' : '')
+        + '</div>'
+      : '');
+
+  /* —— 左：节点仓库（先选服务 → 再列该服务的工具） —— */
+  const kindTab = (k, label) => '<button class="mcpc-tab' + (O.poolKind === k ? ' on' : '')
+    + '" onclick="orchPickKind(' + fmt.attr(k) + ')">' + label + '</button>';
+
+  let poolHead = '', poolBody = '';
+  if (O.poolKind === 'skill') {
+    const sk = (State.skillsScope && State.skillsScope.skills) || [];
+    poolBody = !State.skillsScope
+      ? '<div class="empty"><span class="loading"></span> 正在扫描技能根目录…</div>'
+      : (sk.length
+        ? sk.map(s => {
+          /* 带 orchestration.json 的技能 = 本编排器导出的，给一个"编辑编排"的次要入口 */
+          const hasSrc = (O.items || []).some(it => it.origin === 'skill' && it.name === s.name);
+          return '<div class="orch-pool-item">'
+            + '<div class="orch-pool-row"><b class="mono">' + fmt.esc(s.name) + '</b>'
+            + '<span class="tag gray" style="font-size:10px">' + fmt.esc(s.scopeLabel || '') + '</span></div>'
+            + '<div class="muted" style="font-size:11px">' + fmt.esc(String(s.description || '（无描述）').slice(0, 80)) + '</div>'
+            + '<div class="orch-pool-act">'
+            + '<button class="btn sm" onclick="orchAddSkill(' + fmt.attr(s.name) + ',' + fmt.attr(s.description || '') + ')">＋ 加入画布</button>'
+            + (hasSrc ? '<button class="btn sm" onclick="orchOpen(' + fmt.attr(s.name) + ')" title="这个技能是编排导出的，打开它的源回到画布">✎ 编辑编排</button>' : '')
+            + '</div></div>';
+        }).join('')
+        : '<div class="empty">没有扫描到技能。技能根目录：<code>' + fmt.esc(O.skillRoot || '—') + '</code></div>');
+  } else if (O.poolLoading && !O.poolAll) {
+    poolBody = '<div class="empty"><span class="loading"></span> 正在读取 MCP 工具…</div>';
+  } else if (!O.poolAll) {
+    poolBody = '<div class="empty">' + fmt.esc(O.poolErr || '没有可用的 MCP 工具') + '</div>';
+  } else if (!O.conns.length) {
+    poolBody = '<div class="empty">' + fmt.esc(O.poolErr || '没有已连接的 MCP 服务')
+      + '<div class="muted" style="font-size:11.5px;margin-top:6px">工具来自「MCP 服务」页已连接的连接器。'
+      + '打开 GeoScene Pro 并连上后，这里会出现它的工具。</div></div>';
+  } else if (!O.pool.length) {
+    poolBody = '<div class="empty">这个服务下没有匹配的工具'
+      + (O.poolKw ? '（关键词：' + fmt.esc(O.poolKw) + '）' : '')
+      + '<div class="muted" style="font-size:11.5px;margin-top:6px">换个服务或清空关键词试试。</div></div>';
+  } else {
+    poolBody = O.pool.map(t => {
+      /* ⚠ 列表接口（toolExplorer）不返回 inputSchema —— 这里**没有依据**判断一个工具
+         有没有参数说明，所以不标任何"无参数说明/未声明参数"徽标。
+         真相在点进画布之后：toolDetail 补到 schema 才知道，那时右侧面板会如实说明。 */
+      return '<div class="orch-pool-item" onclick="orchAddTool(' + fmt.attr(t.name) + ',' + fmt.attr(t.connectorId || '')
+        + ',' + fmt.attr(t.serverName || '') + ',' + fmt.attr(t.title || '') + ')" title="'
+        + fmt.attr((t.connection && t.connection.connectionName ? '[' + t.connection.connectionName + '] ' : '')
+          + (t.description || '（无描述）')) + '">'
+        + '<div class="orch-pool-row"><b class="mono">' + fmt.esc(t.name) + '</b>'
+        + (t.stale ? '<span class="tag warn" style="font-size:9.5px" title="工具清单缓存超过 24 小时，可在「MCP 服务」页刷新">缓存旧</span>' : '')
+        + '</div></div>';
+    }).join('');
+  }
+
+  /* 服务下拉：先选服务，再列工具。服务可能几十个，所以用 <select> 而不是一排 chip。
+     ⚠ value= 是 HTML 属性 → 只能 fmt.h；换服务后回读要用 selectedIndex 归位（见 orchSetConn）。 */
+  if (O.poolKind === 'mcp' && (O.conns || []).length) {
+    const total = (O.poolAll || []).length;
+    poolHead = '<div class="orch-conns">'
+      + '<span class="muted" style="font-size:11.5px;white-space:nowrap">MCP 服务</span>'
+      + '<select class="orch-in" style="flex:1 1 auto;min-width:0" onchange="orchSetConn(this.value)">'
+      + '<option value="">全部服务（' + total + ' 个工具）</option>'
+      + (O.conns || []).map(c => '<option value="' + fmt.h(c.key) + '"'
+        + (O.conn === c.key ? ' selected' : '') + '>'
+        + fmt.esc(c.name) + '（' + c.toolCount + ' 个工具）</option>').join('')
+      + '</select>'
+      + (O.conn ? '<span class="muted" style="font-size:11px;white-space:nowrap">筛出 ' + (O.pool || []).length + ' 个</span>' : '')
+      + '</div>';
+  }
+
+  const left = '<div class="orch-panel">'
+    + '<div class="orch-panel-h">节点仓库</div>'
+    + '<div class="mcpc-tabs" style="margin:8px 10px 6px">' + kindTab('mcp', '🧰 MCP 工具') + kindTab('skill', '🧩 已有技能') + '</div>'
+    + (O.poolKind === 'mcp'
+      ? '<input placeholder="搜索工具名 / 描述" value="' + fmt.esc(O.poolKw || '') + '" style="width:calc(100% - 20px);margin:0 10px 8px"'
+        + ' oninput="State.orch.poolKw=this.value;orchPoolDebounce()">'
+      : '')
+    + poolHead
+    + '<div class="orch-pool">' + poolBody + '</div>'
+    + '<div class="orch-pool-foot">点一下工具 → 加进画布</div>'
+    + '</div>';
+
+  /* —— 中：画布 —— */
+  const nodeHtml = O.nodes.map(n => {
+    const isSel = n.id === O.sel;
+    const sc = orchSchemaOf(n);
+    const argN = Object.keys(n.args || {}).length;
+    const need = n.kind === 'skill' ? 0 : sc.required.length;
+    const miss = n.kind === 'skill' ? 0 : sc.required.filter(r => !(n.args || {})[r]).length;
+    const flag = miss ? '<span class="orch-node-flag bad">缺 ' + miss + '</span>'
+      : (argN ? '' : (need ? '' : '<span class="orch-node-flag gray">无参</span>'));
+    return '<div class="orch-node' + (isSel ? ' on' : '') + (n.kind === 'skill' ? ' is-skill' : '') + '"'
+      + ' data-orch-node="' + fmt.esc(n.id) + '" style="left:' + (n.x || 0) + 'px;top:' + (n.y || 0) + 'px"'
+      + ' onmousedown="orchNodeDown(event,' + fmt.attr(n.id) + ')">'
+      + '<div class="orch-node-in" onmouseup="orchWireUp(event,' + fmt.attr(n.id) + ')" title="连到这里"></div>'
+      + '<div class="orch-node-t"><span class="orch-node-ico">' + (n.kind === 'skill' ? '🧩' : '🧰') + '</span>'
+      + '<b class="mono">' + fmt.esc(n.title || n.tool) + '</b></div>'
+      + '<div class="orch-node-m">' + (n.kind === 'skill' ? '技能' : (sc.ok ? argN + ' / ' + sc.required.length + ' 参' : '未声明参数'))
+      + flag + '</div>'
+      + '<div class="orch-node-del" onmousedown="event.stopPropagation()" onclick="orchDelNode(' + fmt.attr(n.id) + ')" title="删除节点">✕</div>'
+      + '<div class="orch-node-out" onmousedown="orchWireDown(event,' + fmt.attr(n.id) + ')" title="从这里拖出连线"></div>'
+      + '</div>';
+  }).join('');
+
+  /* 连线：按 orchEdgeCheck 的结果着色，悬停显示匹配详情。
+     ⚠ 连线的命中区比线本身粗（.orch-wire-hit），否则 2px 的线根本指不到。 */
+  const wireSvg = O.edges.map(e => {
+    const a = O.nodes.find(n => n.id === e.from), b = O.nodes.find(n => n.id === e.to);
+    if (!a || !b) return '';
+    const st = (echeck.get(e.from + '→' + e.to) || {}).state || 'idle';
+    const path = orchWirePath(a.x + 200, a.y + 30, b.x, b.y + 30, 'orch-wire st-' + st);
+    const tip = orchEdgeTip(e, echeck.get(e.from + '→' + e.to), O.nodes);
+    /* 命中区与线同形状但更粗（.orch-wire-hit），2px 的线根本指不到；
+       <title> 是 SVG 原生悬停提示，不需要额外 JS。 */
+    return path + '<path class="orch-wire-hit" d="' + orchPathD(a.x + 200, a.y + 30, b.x, b.y + 30)
+      + '"><title>' + fmt.esc(tip) + '</title></path>';
+  }).join('');
+
+  const canvas = '<div class="orch-canvas-wrap" id="orchcanvas">'
+    + '<svg id="orchwires" class="orch-wires">'
+    + wireSvg
+    + (O.linking && O.linkFrom && O.linkAt
+      ? (() => { const a = O.nodes.find(n => n.id === O.linkFrom); return a ? orchWirePath(a.x + 200, a.y + 30, O.linkAt.x, O.linkAt.y, 'orch-wire orch-wire-drag') : ''; })()
+      : '')
+    + '</svg>'
+    + nodeHtml
+    + (O.nodes.length ? '' : '<div class="orch-canvas-empty">'
+      + '<div style="font-size:32px">🧬</div>'
+      + '<p>从左栏选一个服务，点上工具把它加进画布</p>'
+      + '<p class="muted" style="font-size:12px">节点右侧圆点 → 拖到另一个节点左侧圆点 = 建立连线</p>'
+      + '<p class="muted" style="font-size:12px">连线的颜色就是参数匹配情况：绿=匹配 · 黄=需转换/核对不了 · 红=不匹配 · 灰=没用上</p>'
+      + '</div>')
+    + '</div>';
+
+  /* —— 右：参数面板（上半，选中节点时才占位） + 校验结果（下半，常驻） —— */
+  let paramPanel;
+  if (sel) {
+    const sc = orchSchemaOf(sel);
+    /* 参数行 = schema 里声明的全部参数（即使还没设来源也要列出来，否则用户无从下手）
+       ∪ 用户已显式加过的参数（用于"无参数说明的工具"或技能节点手工声明）。 */
+    const kmap = new Map();
+    if (sc.ok) for (const k of Object.keys(sc.props)) kmap.set(k, sc.props[k] || {});
+    for (const k of Object.keys(sel.args || {})) if (!kmap.has(k)) kmap.set(k, {});
+    const keys = [...kmap.keys()];
+    const rows = keys.map(k => {
+      const p = kmap.get(k) || {};
+      const t = orchTypeOf(p);
+      const req = sc.required.indexOf(k) >= 0;
+      const a = (sel.args || {})[k] || {};
+      const src = a.source || '';
+      const others = O.nodes.filter(n => n.id !== sel.id);
+      /* 取上游时，把上游的同类型字段挑出来优先列（"到底接哪个字段"要看得见）。
+         技能节点 / 上游没声明 outputSchema 时没有字段可选，退化成"整份输出"。 */
+      const upFields = (nid) => {
+        const up = O.nodes.find(x => x.id === nid);
+        const os = up && up.outputSchema;
+        const props = (os && os.properties) || {};
+        return Object.keys(props).map(f => ({ f, t: orchTypeOf(props[f]) }));
+      };
+      const srcSel = '<select onchange="orchArgSource(' + fmt.attr(sel.id) + ',' + fmt.attr(k) + ',this.value)" style="font-size:11.5px">'
+        + '<option value=""' + (src ? '' : ' selected') + '>— 来源 —</option>'
+        + '<option value="const"' + (src === 'const' ? ' selected' : '') + '>固定值</option>'
+        + '<option value="runtime"' + (src === 'runtime' ? ' selected' : '') + '>运行时输入</option>'
+        + '<option value="upstream"' + (src === 'upstream' ? ' selected' : '') + '>上游输出</option>'
+        + '</select>';
+      let extra = '', compat = '';
+      if (src === 'const') {
+        extra = '<input value="' + fmt.esc(a.value === undefined ? '' : String(a.value)) + '" placeholder="值" style="font-size:11.5px;margin-top:4px"'
+          + ' oninput="orchArgValue(' + fmt.attr(sel.id) + ',' + fmt.attr(k) + ',this.value)">';
+      } else if (src === 'upstream') {
+        extra = '<select onchange="orchArgFrom(' + fmt.attr(sel.id) + ',' + fmt.attr(k) + ',this.value)" style="font-size:11.5px;margin-top:4px">'
+          + '<option value="">— 选上游节点 —</option>'
+          + others.map(o => '<option value="' + fmt.esc(o.id) + '"' + (a.fromNode === o.id ? ' selected' : '') + '>'
+            + fmt.esc(orchLabel(o)) + '</option>').join('')
+          + '</select>';
+        const fs2 = a.fromNode ? upFields(a.fromNode) : [];
+        if (fs2.length) {
+          const cur = a.fromField || '';
+          extra += '<select onchange="orchArgField(' + fmt.attr(sel.id) + ',' + fmt.attr(k) + ',this.value)" style="font-size:11.5px;margin-top:4px">'
+            + '<option value="">— 取哪个字段（不选=整份输出）—</option>'
+            + fs2.map(x => '<option value="' + fmt.esc(x.f) + '"' + (cur === x.f ? ' selected' : '') + '>'
+              + fmt.esc(x.f) + (x.t ? '（' + fmt.esc(x.t) + '）' : '') + '</option>').join('')
+            + '</select>';
+          /* 当场把这条绑定的类型匹配结论写出来 —— "到底匹配不匹配"要能在编辑处直接看到 */
+          if (cur) {
+            const up = O.nodes.find(x => x.id === a.fromNode);
+            const st = orchOutputType(up, cur);
+            if (st && t) {
+              const c = orchCompat(st, t);
+              compat = '<div class="orch-cmp ' + (c === 'ok' ? 'ok' : c === 'warn' ? 'warn' : 'bad') + '">'
+                + (c === 'ok' ? '✓ 类型匹配' : c === 'warn' ? '⚠ 类型需转换' : '✕ 类型不匹配')
+                + '：' + fmt.esc(st) + ' → ' + fmt.esc(t) + '</div>';
+            } else {
+              compat = '<div class="orch-cmp warn">⚠ 有一侧没声明类型，无法核对</div>';
+            }
+          }
+        }
+      }
+      return '<div class="orch-arg">'
+        + '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">'
+        + '<b class="mono" style="font-size:11.5px">' + fmt.esc(k) + '</b>'
+        + (req ? '<span class="tag err" style="font-size:10px">必填</span>' : '')
+        + (t ? '<span class="tag gray" style="font-size:10px">' + fmt.esc(t) + '</span>' : '')
+        + '<span style="flex:1"></span>' + srcSel + '</div>'
+        + (p.description ? '<div class="muted" style="font-size:11px;margin-top:4px">' + fmt.esc(String(p.description).slice(0, 140)) + '</div>' : '')
+        + extra + compat + '</div>';
+    }).join('');
+
+    paramPanel = '<div class="orch-sub">'
+      + '<div class="orch-panel-h">' + (sel.kind === 'skill' ? '🧩 ' : '🧰 ') + fmt.esc(sel.title || sel.tool)
+      + '<button class="btn sm" style="float:right;margin:-2px 0 0" onclick="orchSelect(null)" title="收起参数面板，看完整校验结果">收起</button></div>'
+      + '<div style="padding:6px 10px 0">'
+      + '<div class="muted mono" style="font-size:10.5px;word-break:break-all">'
+      + (sel.kind === 'skill' ? '技能节点：没有参数契约，参数需手工声明' : fmt.esc((sel.server || '') + ' / ' + sel.tool)) + '</div>'
+      + '</div>'
+      + (sel.kind === 'skill'
+        ? '<div style="padding:6px 10px 0"><input placeholder="该技能接受什么输入（如：图层名, 输出路径）" value="' + fmt.esc((sel.inDecl || '')) + '" style="font-size:11.5px;width:100%"'
+          + ' oninput="State.orch.nodes.find(n=>n.id===' + fmt.attr(sel.id) + ').inDecl=this.value;render({paintOnly:true})">'
+          + '<input placeholder="该技能产出什么输出（如：图层名, 要素数）" value="' + fmt.esc((sel.outDecl || '')) + '" style="font-size:11.5px;width:100%;margin-top:6px"'
+          + ' oninput="State.orch.nodes.find(n=>n.id===' + fmt.attr(sel.id) + ').outDecl=this.value;render({paintOnly:true})"></div>'
+        : '')
+      + '<div class="orch-args">' + (rows || '<div class="empty" style="font-size:12px">该工具没有声明参数</div>') + '</div>'
+      + (sel.kind !== 'skill' && !sc.ok
+        ? '<div class="pg-tip" style="margin:0 10px 8px;font-size:11.5px">ℹ️ 这个工具<b>没有提供参数说明</b>'
+          + '（它的 inputSchema 里没有 properties），所以核不出必填项、也核不出类型 —— 参数名与类型请你按工具文档自行填写。</div>' : '')
+      + '</div>';
+  }
+
+  const checkPanel = '<div class="orch-sub">'
+    + '<div class="orch-panel-h">校验结果'
+    + '<span class="muted" style="font-weight:400;font-size:11px"> · ' + (errN ? errN + ' 错' : '无错') + (warnN ? ' / ' + warnN + ' 提醒' : '') + '</span></div>'
+    + '<div class="orch-check" id="orchcheck">'
+    + (errN ? chk.errors.map(e => '<div class="orch-msg bad">✕ ' + fmt.esc(e) + '</div>').join('') : '')
+    + (warnN ? chk.warns.map(w => '<div class="orch-msg warn">⚠ ' + fmt.esc(w) + '</div>').join('') : '')
+    + (!errN && !warnN ? '<div class="orch-msg ok">✓ 没有发现问题'
+      + (O.nodes.length ? '，可以导出了' : '') + '</div>' : '')
+    + (!O.nodes.length ? '<div class="muted" style="font-size:11.5px;margin-top:8px">先从左栏把工具加进画布。</div>'
+      : '<div class="muted" style="font-size:11px;margin-top:8px">连线颜色 = 参数匹配：'
+        + '<b class="orch-legend-ok">绿</b> 匹配 · <b class="orch-legend-warn">黄</b> 需转换/核对不了 · '
+        + '<b class="orch-legend-bad">红</b> 不匹配 · <b class="orch-legend-idle">灰</b> 这条线没被参数用上（悬停连线看详情）</div>')
+    + '</div></div>';
+
+  const right = '<div class="orch-panel">' + (paramPanel || '') + checkPanel + '</div>';
+
+  return bar
+    + '<div class="orch-grid" onmousemove="orchCanvasMove(event)" onmouseup="orchCanvasUp()" onmouseleave="orchCanvasUp()">'
+    + left + canvas + right + '</div>';
 }
 
 /** 页签二：市场（ntd 6600+ 技能；来源过滤 + 关键词搜索 + 分段渲染） */
@@ -4143,7 +5239,9 @@ function skmgMarketHtml() {
       + (mkt.gitAvailable ? '' : '<span class="tag err">git 不可用</span>')
       + '<span class="muted" style="font-size:11.5px">上次同步 ' + skmgTime(mkt.lastSyncAt)
       + (mkt.autoSync ? ' · 每日自动' : '') + (mkt.syncOnStartup ? ' · 启动时' : '') + '</span>'
-      + '<button class="btn sm" onclick="skmgMarketSync()" ' + (mkt.syncing ? 'disabled' : '') + '>' + (mkt.syncing ? '⏳ 同步中' : '🔄 同步') + '</button>'
+      /* ⚠ 同步按钮只留顶栏那一个（🔄 同步市场）。状态条以前也挂了一个「🔄 同步」，
+         同一个 skmgMarketSync —— 条上已经有"上次同步/已最新/有更新"全部信息，
+         再加按钮就是同页两个入口（2026-09-29 已删）。同步中状态仍在下面 tag 上体现。 */
       + '</div>'
     : '';
   const bar = '<div class="card" style="padding:10px 14px">'
@@ -4251,15 +5349,12 @@ async function skmgDetail(name, executor) {
       + '</div></details>' : '')
     + '<details class="fold" open><summary>📖 SKILL.md 正文预览</summary><div class="fold-body">'
     + '<pre class="mono" style="font-size:11.5px;white-space:pre-wrap;max-height:280px;overflow:auto">' + fmt.esc(String(d.content || '').slice(0, 6000)) + (String(d.content || '').length > 6000 ? '\n…（正文过长，已截断）' : '') + '</pre>'
-    + '</div></details></div>'
-    + '<div class="modal-actions">'
-    + (d.executor === 'dsh' || d.executor === 'agents'
-      ? '<button class="btn" onclick="skmgToggleInv(' + fmt.attr(d.name) + ', ' + (meta['disable-model-invocation'] === true) + ')">'
-        + (meta['disable-model-invocation'] === true ? '允许模型调用' : '禁止模型调用') + '</button>' : '')
-    + (d.isInstalled
-      ? '<button class="btn danger" onclick="document.getElementById(\'skmgdetail\').remove();skmgDelete(' + fmt.attr(d.name) + ')">删除</button>'
-      : '<button class="btn primary" onclick="document.getElementById(\'skmgdetail\').remove();skmgInstall(' + fmt.attr(d.name) + (d.executor && d.executor !== 'dsh' && d.executor !== 'market' ? ', ' + fmt.attr(d.executor) : '') + ')">安装到 DSH</button>')
-    + '</div>';
+    + '</div></details></div>';
+  /* ⚠ 弹窗**不再挂写操作**（2026-09-29 删）。以前底部有「禁止/允许模型调用」「删除」「安装到 DSH」，
+     和卡片行上的按钮一字不差 —— 同一个技能、同一个页签，两个地方能点同一件事。
+     而且弹窗那版是 `getElementById('skmgdetail').remove(); skmgXxx(...)`：先关窗再执行，
+     用户看不到结果反馈，失败时更懵。弹窗的定位就是"看一眼 SKILL.md 正文和依赖文件"，
+     改完只留一个「关闭」。按钮都留在卡片行上，那儿离上下文更近。 */
   document.getElementById('skmgdetail-body').outerHTML = body;
 }
 
@@ -4944,9 +6039,8 @@ function mcpcConnHtml() {
     + (stat.bad ? '<span class="tag warn">' + stat.bad + ' 需处理</span>' : '')
     + (stat.off ? '<span class="tag gray">' + stat.off + ' 已停用</span>' : '')
     + '<span class="muted" style="font-size:11.5px">状态由插件的连接健康检查维护；SSE 推送变更时本页自动刷新。</span>'
-    + '<span style="flex:1"></span>'
-    + '<button class="btn sm" onclick="mcpcAddDialog()">➕ 添加连接</button>'
-    + '<button class="btn sm" onclick="mcpcHealthAll()">🩺 全部测活</button>'
+    /* ⚠ 这里**不要**再放「添加连接 / 全部测活」：顶栏 pt-actions 里各有一个、全页签常驻，
+       卡片头部再放一份就是同一页内两个入口，纯冗余（2026-09-29 已删）。 */
     + '</div>'
     + '<div style="overflow-x:auto"><table><thead><tr><th>连接</th><th>端点</th><th>鉴权</th><th>状态</th><th>作用域</th><th>操作</th></tr></thead>'
     + '<tbody>' + rows + '</tbody></table></div>'
@@ -10152,7 +11246,18 @@ async function render(opts){
   // 先记下 activeElement 的 id 与选区，贴完新骨架再放回去。
   const act = document.activeElement;
   const actId = act && act.id ? act.id : null;
-  const actSel = actId && typeof act.selectionStart === 'number' ? [act.selectionStart, act.selectionEnd] : null;
+  /* ⚠ 只靠 id 不够：搜索框大多是"oninput → render({paintOnly:true})"的即时重绘，
+     而且一堆连 id 都没有（市场/工具搜索、编排的参数/输入输出声明框…）——
+     id 路径对它们永远失效，表现就是"打一个字母就掉焦点，没法连续输入"。
+     兜底：按"contentEl 内可输入控件的序号"恢复 —— 同一模板重绘后序号不变。
+     （模态框里的输入框不在 contentEl 内，indexOf 返回 -1，天然不参与。） */
+  const isField = (el) => el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT');
+  let actIdx = -1;
+  if (isField(act) && !actId) {
+    const all = contentEl.querySelectorAll('input,textarea,select');
+    actIdx = Array.prototype.indexOf.call(all, act);
+  }
+  const actSel = (actId || actIdx >= 0) && act && typeof act.selectionStart === 'number' ? [act.selectionStart, act.selectionEnd] : null;
   // 对话草稿：Pages.chat() 每次都会把 #chatinput 重建，先把现值记到 State 再贴回去
   // （否则点一下审批 / 切一下页面，刚写一半的指令就没了）
   const draftEl = document.getElementById('chatinput');
@@ -10167,6 +11272,16 @@ async function render(opts){
     const na = document.getElementById(actId);
     if (na && typeof na.focus === 'function') {
       try { na.focus(); if (actSel && typeof na.setSelectionRange === 'function') na.setSelectionRange(actSel[0], actSel[1]); } catch (e) { /* 焦点/选区恢复失败不影响渲染 */ }
+    }
+  } else if (actIdx >= 0) {
+    /* 无 id 兜底：按序号找回同一个控件（INPUT/TEXTAREA 恢复光标，SELECT 只恢复焦点） */
+    const all = contentEl.querySelectorAll('input,textarea,select');
+    const na = all[actIdx];
+    if (na && typeof na.focus === 'function') {
+      try {
+        na.focus();
+        if (actSel && typeof na.setSelectionRange === 'function') na.setSelectionRange(actSel[0], actSel[1]);
+      } catch (e) { /* 同上，静默 */ }
     }
   }
   // 对话页要"卡片顶到窗口底部"：去掉 .content 的 60px 底部内边距，
@@ -11262,6 +12377,35 @@ document.addEventListener('click', (e) => {
   if (e.target.closest('.menu-pop, .chat-input-row')) return;
   closeMenus();
 });
+
+/* ==================================================================
+   全局输入框补丁：关掉浏览器原生的"历史输入记录"下拉（autofill）
+   ------------------------------------------------------------------
+   输入框输过一次之后再输入，浏览器会弹出原生历史下拉（深色主题下白底大框，
+   又丑又挡内容）。30 个输入框靠模板字符串 innerHTML 生成，逐个塞
+   autocomplete="off" 又散又容易漏 —— 用 MutationObserver 统一补：
+   任何新出现的 input/textarea 一律补 autocomplete="off"。
+   - datalist 候选不受影响：凭据名的下拉由 list 属性控制，是功能不是历史。
+   - checkbox/file 等类型本就没有历史下拉，统一设置无害。
+   - 属性已在的（未来某处特意开了）不覆盖。
+   ⚠ 必须判 `typeof MutationObserver` —— 静态审计脚本（tools/test-api.mjs）在 Node VM
+   里跑本文件，那里没有 DOM/MutationObserver，无条件 new 会让整个测试崩掉。 */
+if (typeof MutationObserver !== 'undefined' && typeof document !== 'undefined' && document.documentElement) {
+  new MutationObserver((muts) => {
+    for (const m of muts) {
+      for (const n of m.addedNodes) {
+        if (n.nodeType !== 1) continue;
+        if (n.tagName === 'INPUT' || n.tagName === 'TEXTAREA') {
+          if (!n.hasAttribute('autocomplete')) n.setAttribute('autocomplete', 'off');
+        } else if (n.querySelectorAll) {
+          n.querySelectorAll('input:not([autocomplete]),textarea:not([autocomplete])')
+            .forEach((el) => el.setAttribute('autocomplete', 'off'));
+        }
+      }
+    }
+  }).observe(document.documentElement, { childList: true, subtree: true });
+}
+
 window.addEventListener('DOMContentLoaded', async () => {
   // 界面偏好必须在**首次 render 之前**拿到：页面骨架（说明卡、对话显示模式）靠它决定
   await loadUiPrefs();

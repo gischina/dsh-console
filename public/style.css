@@ -6,6 +6,7 @@
  */
 
 :root{
+  color-scheme:dark;               /* 原生控件（下拉弹层/滚动条/日期）跟随深色，别在深色页里弹白框 */
   --bg:#0a1020; --bg-2:#0e1730; --panel:#111c38; --panel-2:#16223f;
   --line:#1e2f57; --line-2:#27406f;
   --txt:#e8eefc; --txt-2:#9fb0d0; --txt-3:#6d7fa3;
@@ -286,7 +287,7 @@ th.sortable.desc::after{content:'↓';opacity:1;color:var(--brand-2)}
    否则两个下拉各要占满整行，把旁边的 CJK 标签挤成竖排逐字换行。 */
 .switches{display:flex;gap:8px;align-items:center;flex:0 0 auto;white-space:nowrap}
 .switches .sw-lb{color:var(--txt-3);font-size:11px;flex:0 0 auto;white-space:nowrap}
-.switches select{width:auto;flex:0 0 auto;padding:3px 8px;font-size:12px;border-radius:7px;background:var(--panel-2)}
+.switches select{width:auto;flex:0 0 auto;padding:3px 8px;font-size:12px;border-radius:7px;background-color:var(--panel-2)}
 /* 窄屏：标签让位，只留下拉（下拉值本身自解释：只读 / 工作区可写 / 完全访问、浅色 / 深色 / 跟随系统）——
    规则并入下方 ≤1100 平板档 */
 
@@ -378,6 +379,24 @@ input,textarea,select{
   color:var(--txt);padding:9px 12px;font-size:13px;font-family:inherit;width:100%;outline:none
 }
 input:focus,textarea:focus,select:focus{border-color:var(--brand);box-shadow:0 0 0 3px rgba(47,123,255,.15)}
+/* 下拉框统一自绘：去掉原生箭头（深色底上是 Windows 默认小箭头，又黑又糊），
+   换成随主题的 chevron；弹层配色交给 :root 的 color-scheme。
+   ⚠ 后面所有针对 select 的 background 必须写 background-color（shorthand 会把箭头图清掉）。 */
+select{
+  appearance:none;-webkit-appearance:none;cursor:pointer;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' fill='none' stroke='%237d8db3' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  background-repeat:no-repeat;background-position:right 11px center;
+  padding-right:30px
+}
+select:hover{border-color:var(--line-2)}
+/* 小尺寸下拉（编排顶栏 / 平台开关 / 参数面板 / MCP 工具页）：箭头位置与右内边距跟着收紧。
+   ⚠ 只列"确实偏小"的那几类；宽表单下拉沿用全局的 30px / right 11px。 */
+select.orch-in,
+.switches select,
+.orch-arg select,
+select.mcpc-sel{padding-right:22px;background-position:right 7px center}
+/* 参数面板里那几个 11.5px 的行内下拉：更窄，箭头再往里收一点 */
+.orch-arg select{font-size:11.5px;padding-right:20px;background-position:right 6px center}
 
 table{width:100%;border-collapse:collapse;font-size:13px}
 th{text-align:left;color:var(--txt-3);font-weight:600;font-size:12px;padding:9px 10px;border-bottom:1px solid var(--line)}
@@ -420,6 +439,7 @@ code{background:#0b1428;border:1px solid var(--line);padding:1px 6px;border-radi
    由设置页 / 对话页的"外观"开关切换：<html data-theme="light">。
    以变量覆盖为主，少量硬编码深色（pre/code/输入框/侧栏）单独兜底。 */
 :root[data-theme="light"]{
+  color-scheme:light;              /* 原生控件弹层跟随浅色 */
   --bg:#f3f6fb; --bg-2:#e9eff8; --panel:#ffffff; --panel-2:#f4f7fd;
   --line:#d9e2f1; --line-2:#c2d1e8;
   --txt:#15203a; --txt-2:#4b5d7e; --txt-3:#7f90ad;
@@ -444,7 +464,9 @@ code{background:#0b1428;border:1px solid var(--line);padding:1px 6px;border-radi
 :root[data-theme="light"] code,
 :root[data-theme="light"] input,
 :root[data-theme="light"] textarea,
-:root[data-theme="light"] select{background:#f1f5fc !important;color:var(--txt) !important}
+:root[data-theme="light"] select{background-color:#f1f5fc !important;color:var(--txt) !important}
+/* ⚠ 这里必须用 background-color 而不是 background：select 的自绘箭头是
+   background-image（见上方 select 规则），shorthand 会把它清掉。 */
 :root[data-theme="light"] .card:hover{box-shadow:0 8px 24px rgba(30,60,120,.12)}
 :root[data-theme="light"] .modal{background:#fff}
 :root[data-theme="light"] .modal-mask{background:rgba(30,45,80,.35)}
@@ -1146,7 +1168,175 @@ table.flat th:last-child,table.flat td:last-child{padding-right:0}
 .mcpc-frow{display:grid;grid-template-columns:130px 1fr;gap:10px;align-items:center;margin-bottom:9px}
 .mcpc-frow>label{font-size:12px;color:var(--txt-2)}
 .mcpc-sel{
-  padding:5px 8px;border-radius:var(--radius-s);border:1px solid var(--line);
-  background:var(--panel);color:var(--txt);font-size:12.5px;max-width:220px
+  /* ⚠ 必须 background-color（不是 background）：select 的箭头是全局规则里的
+     background-image，用简写会把它清掉 → 表现是"原生箭头没了、自绘的也没出来"，
+     下拉框光秃秃看不出能点。padding-right 也要留出箭头的位置。 */
+  padding:5px 22px 5px 8px;border-radius:var(--radius-s);border:1px solid var(--line);
+  background-color:var(--panel);color:var(--txt);font-size:12.5px;max-width:220px;
+  background-position:right 7px center
 }
 @media (max-width:640px){.mcpc-frow{grid-template-columns:1fr}}
+
+/* ============ 技能编排器 ============
+   三栏：左仓库 / 中画布 / 右面板。画布用绝对定位的 div 画节点、覆盖一层 SVG 画连线，不引图形库。
+
+   ⚠ 版面原则（2026-09-29 重构）：**画布优先**。
+   ① 元信息表单压成顶部一行（.orch-bar），说明文字收进「?」气泡，草稿列表收成一行下拉；
+   ② 整页锁在视口内：.orch-grid 用 minmax(0,1fr) 行高 + 溢出滚动，
+      这样三栏各自滚，不再"整页滚一条、画布只剩一半"；
+   ③ 画布高度自适应（撑满 .orch-grid 的那一行），不再写死 70vh。 */
+.orch-bar,.orch-bar2{
+  display:flex;gap:8px;align-items:center;flex-wrap:wrap;
+  padding:8px 12px;border:1px solid var(--line);border-radius:var(--radius);background:var(--panel)
+}
+.orch-bar{margin-top:10px}
+.orch-bar2{margin-top:8px;padding:6px 12px}
+.orch-in{
+  padding:5px 8px;border-radius:var(--radius-s);border:1px solid var(--line);
+  background-color:var(--inset);color:var(--txt);font-family:inherit;font-size:12.5px;min-width:0
+}
+.orch-in:focus{outline:none;border-color:var(--brand)}
+.orch-bar .btn.sm{padding:5px 9px;font-size:12px;white-space:nowrap}
+
+/* 三栏。grid-template-rows:minmax(0,1fr) 让唯一那行可以被压缩，
+   否则内容会把容器顶高、产生整页滚动条。 */
+.orch-grid{
+  display:grid;grid-template-columns:minmax(230px,290px) minmax(0,1fr) minmax(270px,330px);
+  grid-template-rows:minmax(0,1fr);
+  gap:12px;margin-top:10px;
+  height:calc(100vh - 248px);min-height:420px
+}
+@media (max-width:1180px){.orch-grid{grid-template-columns:minmax(200px,250px) minmax(0,1fr) minmax(240px,300px)}}
+@media (max-width:960px){
+  .orch-grid{grid-template-columns:1fr;grid-template-rows:none;height:auto}
+  .orch-panel{max-height:52vh}
+  .orch-canvas-wrap{height:60vh}
+}
+.orch-panel{
+  border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);
+  display:flex;flex-direction:column;overflow:hidden;min-height:0
+}
+.orch-panel-h{
+  padding:8px 11px;border-bottom:1px solid var(--line);background:var(--panel-2);
+  font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:0 0 auto
+}
+/* 右栏上下两块（参数 / 校验）：参数面板最多占一半，剩下都留给校验结果 */
+.orch-sub{display:flex;flex-direction:column;min-height:0;overflow:hidden}
+.orch-sub+.orch-sub{border-top:1px solid var(--line)}
+.orch-panel>.orch-sub:first-child{flex:0 1 auto;max-height:55%}
+.orch-panel>.orch-sub:last-child{flex:1 1 auto}
+.orch-panel>.orch-sub:only-child{flex:1 1 auto;max-height:none}
+
+.orch-pool{flex:1;overflow:auto;padding:0 8px 8px;min-height:0}
+.orch-pool-item{
+  padding:6px 9px;border:1px solid transparent;border-radius:var(--radius-s);
+  cursor:pointer;margin-bottom:4px;display:flex;flex-direction:column;gap:2px
+}
+.orch-pool-item:hover{background:var(--inset);border-color:var(--line)}
+.orch-pool-item b{font-weight:600;font-size:11.5px}
+.orch-pool-row{display:flex;gap:6px;align-items:center;overflow:hidden}
+.orch-pool-row b{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.orch-pool-act{display:flex;gap:5px;flex-wrap:wrap;margin-top:4px}
+.orch-pool-act .btn.sm{padding:2px 7px;font-size:11px}
+.orch-pool-foot{
+  flex:0 0 auto;padding:7px 10px;border-top:1px solid var(--line);
+  font-size:10.5px;color:var(--txt-3);background:var(--panel-2)
+}
+/* 服务选择：先选服务，再列该服务的工具。
+   服务可能有几十个，所以是 <select> 而不是一排 chip —— 固定一行高度，不随服务数膨胀。 */
+.orch-conns{
+  display:flex;gap:6px;align-items:center;padding:0 10px 8px;flex:0 0 auto
+}
+
+.orch-canvas-wrap{
+  position:relative;overflow:auto;height:100%;min-height:0;
+  border:1px solid var(--line);border-radius:var(--radius);background:var(--bg-2);
+  background-image:radial-gradient(var(--line) 1px,transparent 1px);
+  background-size:20px 20px
+}
+.orch-wires{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible}
+.orch-wire{fill:none;stroke:var(--line-2);stroke-width:2;opacity:.85}
+.orch-wire.st-ok{stroke:var(--ok);opacity:.9}
+.orch-wire.st-warn{stroke:var(--warn);opacity:.9}
+.orch-wire.st-bad{stroke:var(--err);opacity:.95}
+.orch-wire.st-idle{stroke:var(--txt-3);stroke-dasharray:6 5;opacity:.7}
+/* 命中区：线只有 2px，鼠标根本指不到。叠一条同形状的透明粗线专门接事件。 */
+.orch-wire-hit{fill:none;stroke:transparent;stroke-width:14;pointer-events:stroke;cursor:help}
+.orch-wire-drag{stroke:var(--accent);stroke-dasharray:5 4;opacity:1}
+.orch-canvas-empty{
+  position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;
+  justify-content:center;gap:4px;color:var(--txt-2);text-align:center;padding:24px;pointer-events:none
+}
+.orch-canvas-empty p{margin:0;font-size:12.5px}
+
+.orch-node{
+  position:absolute;width:200px;min-height:60px;padding:8px 10px;
+  border:1px solid var(--line-2);border-radius:var(--radius-s);background:var(--panel);
+  cursor:grab;user-select:none;box-shadow:0 1px 3px rgba(0,0,0,.16);z-index:2
+}
+.orch-node:active{cursor:grabbing}
+.orch-node.on{border-color:var(--brand);box-shadow:0 0 0 2px rgba(59,130,246,.28)}
+.orch-node.is-skill{border-left:3px solid var(--accent)}
+.orch-node-t{display:flex;align-items:center;gap:6px;overflow:hidden}
+.orch-node-t b{font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.orch-node-ico{flex:0 0 auto;font-size:13px}
+.orch-node-m{
+  margin-top:4px;font-size:10.5px;color:var(--txt-3);
+  display:flex;gap:6px;align-items:center;flex-wrap:wrap
+}
+.orch-node-flag{font-size:10px;padding:0 5px;border-radius:99px}
+.orch-node-flag.bad{background:rgba(239,68,68,.16);color:#f87171}
+.orch-node-flag.gray{background:rgba(159,176,208,.12);color:var(--txt-3)}
+.orch-node-del{
+  position:absolute;top:4px;right:6px;font-size:11px;color:var(--txt-3);
+  cursor:pointer;padding:1px 4px;border-radius:4px
+}
+.orch-node-del:hover{background:rgba(239,68,68,.16);color:#f87171}
+/* 连线锚点：左进右出。 */
+.orch-node-in,.orch-node-out{
+  position:absolute;width:12px;height:12px;border-radius:50%;
+  background:var(--panel);border:2px solid var(--brand);top:50%;transform:translateY(-50%);
+  cursor:crosshair;z-index:3
+}
+.orch-node-in{left:-7px}
+.orch-node-out{right:-7px;background:var(--brand)}
+.orch-node-out:hover,.orch-node-in:hover{box-shadow:0 0 0 3px rgba(59,130,246,.3)}
+.orch-node.orch-linking .orch-node-in{box-shadow:0 0 0 4px rgba(245,165,36,.35);border-color:var(--accent)}
+
+.orch-args{flex:1;overflow:auto;padding:8px 10px;min-height:0}
+.orch-arg{
+  padding:7px 8px;border:1px solid var(--line);border-radius:var(--radius-s);
+  background:var(--inset);margin-bottom:6px
+}
+.orch-arg select,.orch-arg input{
+  padding:3px 6px;border-radius:var(--radius-s);border:1px solid var(--line);
+  background-color:var(--panel);color:var(--txt);font-family:inherit;width:100%
+}
+.orch-arg select:focus,.orch-arg input:focus{outline:none;border-color:var(--brand)}
+/* 「这个参数和上游到底匹不匹配」——就地写在参数行里，不用去别处找 */
+.orch-cmp{font-size:11px;margin-top:5px;padding:3px 7px;border-radius:var(--radius-s)}
+.orch-cmp.ok{background:rgba(34,197,94,.12);color:#4ade80}
+.orch-cmp.warn{background:rgba(245,165,36,.12);color:#fbbf24}
+.orch-cmp.bad{background:rgba(239,68,68,.12);color:#f87171}
+.orch-check{flex:1;overflow:auto;padding:9px 10px;min-height:0}
+.orch-msg{
+  font-size:11.5px;line-height:1.55;padding:5px 8px;border-radius:var(--radius-s);
+  margin-bottom:4px;word-break:break-word
+}
+.orch-msg.bad{background:rgba(239,68,68,.1);color:#f87171;border:1px solid rgba(239,68,68,.22)}
+.orch-msg.warn{background:rgba(245,165,36,.1);color:#fbbf24;border:1px solid rgba(245,165,36,.22)}
+.orch-msg.ok{background:rgba(34,197,94,.1);color:#4ade80;border:1px solid rgba(34,197,94,.22)}
+.orch-legend-ok{color:#4ade80}
+.orch-legend-warn{color:#fbbf24}
+.orch-legend-bad{color:#f87171}
+.orch-legend-idle{color:var(--txt-3)}
+:root[data-theme="light"] .orch-msg.bad{color:#c22f2f}
+:root[data-theme="light"] .orch-msg.warn{color:#a8690a}
+:root[data-theme="light"] .orch-msg.ok{color:#0f8a44}
+:root[data-theme="light"] .orch-node-flag.bad{color:#c22f2f}
+:root[data-theme="light"] .orch-cmp.ok{color:#0f8a44}
+:root[data-theme="light"] .orch-cmp.warn{color:#a8690a}
+:root[data-theme="light"] .orch-cmp.bad{color:#c22f2f}
+:root[data-theme="light"] .orch-legend-ok{color:#0f8a44}
+:root[data-theme="light"] .orch-legend-warn{color:#a8690a}
+:root[data-theme="light"] .orch-legend-bad{color:#c22f2f}
