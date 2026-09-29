@@ -1177,6 +1177,112 @@ table.flat th:last-child,table.flat td:last-child{padding-right:0}
 }
 @media (max-width:640px){.mcpc-frow{grid-template-columns:1fr}}
 
+/* ============ 插件市场卡片（dshmarket）============ */
+.dshm-grid{
+  display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));
+  gap:14px;margin-top:8px
+}
+.dshm-card{
+  display:flex;flex-direction:column;
+  margin:0;padding:15px 16px 13px;
+  border:1px solid var(--line);border-radius:14px;
+  background:linear-gradient(165deg,var(--panel) 0%,var(--panel-2) 100%);
+  box-shadow:0 1px 0 rgba(255,255,255,.04) inset;
+  transition:border-color .15s ease,transform .15s ease,box-shadow .15s ease;
+  min-height:168px
+}
+.dshm-card:hover{
+  border-color:var(--line-2);
+  transform:translateY(-2px);
+  box-shadow:0 10px 26px rgba(0,0,0,.24),0 0 0 1px rgba(47,123,255,.14)
+}
+.dshm-card.is-on{border-color:rgba(34,197,94,.38)}
+.dshm-card.is-on:hover{box-shadow:0 10px 26px rgba(0,0,0,.22),0 0 0 1px rgba(34,197,94,.22)}
+.dshm-head{display:flex;align-items:flex-start;gap:11px;margin-bottom:10px}
+.dshm-avatar{
+  width:40px;height:40px;border-radius:11px;flex:0 0 auto;
+  display:flex;align-items:center;justify-content:center;
+  font-size:12.5px;font-weight:700;letter-spacing:.04em;color:#fff;
+  background:
+    radial-gradient(120% 120% at 20% 15%,hsla(0,0%,100%,.28),transparent 50%),
+    linear-gradient(145deg,hsl(var(--h,210) 64% 52%),hsl(calc(var(--h,210) + 32) 72% 36%));
+  box-shadow:0 2px 8px hsla(var(--h,210),55%,42%,.32),inset 0 1px 0 rgba(255,255,255,.22)
+}
+.dshm-titles{flex:1;min-width:0;padding-top:1px}
+.dshm-name{
+  font-size:14px;font-weight:650;color:var(--txt);line-height:1.3;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis
+}
+.dshm-meta{
+  display:flex;align-items:center;gap:0;flex-wrap:nowrap;
+  margin-top:3px;font-size:11px;color:var(--txt-3);line-height:1.4;
+  min-width:0;overflow:hidden
+}
+.dshm-meta>span{flex:0 1 auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dshm-dot{flex:0 0 auto;margin:0 5px;opacity:.5}
+.dshm-badge{
+  flex:0 0 auto;align-self:flex-start;margin-top:1px;
+  font-size:10.5px;font-weight:600;padding:3px 9px;border-radius:999px;
+  color:#16a34a;background:rgba(34,197,94,.14);border:1px solid rgba(34,197,94,.28);
+  letter-spacing:.02em
+}
+.dshm-desc{
+  margin:0;font-size:12.5px;line-height:1.55;color:var(--txt-2);
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+  overflow:hidden;min-height:2.4em;flex:1
+}
+.dshm-foot{
+  display:flex;flex-direction:column;gap:10px;
+  margin-top:12px;padding-top:11px;border-top:1px solid var(--line)
+}
+.dshm-stats{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
+.dshm-pill{
+  font-size:10.5px;padding:2px 8px;border-radius:999px;
+  color:var(--txt-3);background:var(--inset);
+  border:1px solid var(--line);white-space:nowrap;max-width:9em;
+  overflow:hidden;text-overflow:ellipsis
+}
+.dshm-stat{
+  display:inline-flex;align-items:center;gap:3px;
+  font-size:11px;color:var(--txt-3);white-space:nowrap;
+  font-variant-numeric:tabular-nums
+}
+.dshm-ico{opacity:.7;font-size:10px;line-height:1}
+.dshm-acts{display:flex;gap:6px;align-items:center;justify-content:flex-end}
+.dshm-acts .btn.sm{padding:5px 12px;font-size:12px;border-radius:8px}
+.dshm-acts .btn.ghost,
+.dshm-acts a.btn.ghost{
+  background:transparent;border-color:var(--line);color:var(--txt-2);font-weight:500
+}
+.dshm-acts .btn.ghost:hover,
+.dshm-acts a.btn.ghost:hover{
+  border-color:var(--line-2);color:var(--txt);background:rgba(47,123,255,.08)
+}
+
+:root[data-theme="light"] .dshm-card{
+  background:#fff;
+  border-color:#e6ebf4;
+  box-shadow:0 1px 2px rgba(15,23,42,.04),0 4px 14px rgba(15,23,42,.03)
+}
+:root[data-theme="light"] .dshm-card:hover{
+  border-color:#cdd8ef;
+  box-shadow:0 8px 22px rgba(15,23,42,.08),0 0 0 1px rgba(47,123,255,.12)
+}
+:root[data-theme="light"] .dshm-card.is-on{
+  border-color:rgba(34,197,94,.45);
+  background:linear-gradient(180deg,#fff 70%,rgba(34,197,94,.04) 100%)
+}
+:root[data-theme="light"] .dshm-foot{border-top-color:#eef2f8}
+:root[data-theme="light"] .dshm-badge{
+  color:#15803d;background:rgba(34,197,94,.1);border-color:rgba(34,197,94,.28)
+}
+:root[data-theme="light"] .dshm-pill{
+  background:#f4f7fc;border-color:#e6ebf4;color:#64748b
+}
+:root[data-theme="light"] .dshm-avatar{
+  box-shadow:0 2px 6px rgba(15,23,42,.12),inset 0 1px 0 rgba(255,255,255,.35)
+}
+
 /* ============ 技能编排器 ============
    三栏：左仓库 / 中画布 / 右面板。画布用绝对定位的 div 画节点、覆盖一层 SVG 画连线，不引图形库。
 

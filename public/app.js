@@ -549,6 +549,11 @@ const State = { sessionId: null, sessions: [], host: null, skills: [], presets: 
                 skmg: { available: null, unavailable: false, probeAt: 0, tab: 'installed',
                         list: null, listAt: 0, kw: '', src: '', limit: 60,
                         execs: null, execsAt: 0, drill: '', drillData: null, mkt: null, mktAt: 0 },
+                /* 插件市场（dshmarket）：市场目录 / 已安装管理 / 本机 dump 清单 */
+                dshm: { available: null, unavailable: false, probeAt: 0, tab: 'installed',
+                        status: null, statusAt: 0, installed: null, installedAt: 0,
+                        registry: null, registryAt: 0, updates: null, updatesAt: 0,
+                        kw: '', cat: '', sort: 'stars', limit: 48, op: null },
                 /* 技能编排器：草稿、节点仓库、画布。全部是纯客户端状态 ——
                    只有"保存/导出"这两步才碰磁盘，且必须由用户显式触发。 */
                 orch: { loaded: false, projectRoot: '', skillRoot: '', dir: '', items: null,
@@ -2676,15 +2681,15 @@ const PAGE_HELP = {
       + '连接器层（市场/手动/JSON）由插件热管理，**免重启**。',
   },
   plugins: {
-    what: 'Cordis 插件树清单：本部署到底装了哪些插件、来自哪一层、哪些被禁用、哪些属于安全敏感类。',
-    src: '<code>dsh --dump-config</code> 实时 dump（失败自动回退 <code>plugins.json</code> 快照）+ <code>pluginInventory/list</code> 运行时状态',
+    what: 'Cordis 插件中心：浏览社区市场、一键安装 / 启停 / 卸载 / 更新，外加本机 dump-config 合成树诊断。',
+    src: 'dshmarket 插件 <code>/dsh-market/*</code>（经 <code>/api/dshm</code> 等价转发；插件没装时给安装引导）+ <code>dsh --dump-config</code> 实时 dump + <code>pluginInventory/list</code> 运行时状态',
     use: [
-      '按分类看分布；表格可筛选（id 或包名关键字）与排序。',
-      '「🔄 重新探测」重跑一次 dump-config，成功即回写快照。',
-      '下区是运行时清单（fiber 状态），用来区分"配了"与"真的在跑"。',
+      '「🛍️ 市场」按分类 / 关键词浏览 awesome-dsh-plugin 目录，一键安装。',
+      '「📦 已安装」热启停、卸载、检查更新；多数插件装完刷新页面即用。',
+      '「📋 本机清单」看 dump-config 合成树与运行时 fiber 状态（诊断视角）。',
     ],
-    go: ['mcp', 'settings', 'knowledge'],
-    tip: '想知道"某个插件到底有没有在跑"看下区的运行时清单；想知道"它是怎么被装配进来的"看表格里的层与来源。',
+    go: ['mcp', 'skillMgr', 'settings'],
+    tip: '市场与启停由 dshmarket 驱动；本机清单是合成视角，两者最终都落在同一份 profile。',
   },
   knowledge: {
     what: '知识库：一个由**知识库插件**提供的本地知识库（知识库组 / 文档 / 切片 / 检索）。',
@@ -3190,6 +3195,11 @@ const PAGE_CHECKS = {
       want: v => (v.entries || []).filter(e => /mcp/i.test(e.id || e.package || '')).length + ' 个 MCP 插件实例', opt: true },
   ],
   plugins: [
+    { name: 'dshmarket 插件市场（/dsh-market/status）', opt: true, fn: async () => {
+        const r = await fetch('/api/dshm-status?t=' + Date.now(), { cache: 'no-store' }).then(x => x.json());
+        if (!r.available) throw new Error(r.unavailable ? '未安装 dshmarket（可选）' : ('探测失败 HTTP ' + r.httpStatus + (r.error ? ' · ' + r.error : '')));
+        return r;
+      }, want: r => 'v' + (r.version || '?') + ' · 目标 ' + r.origin },
     { name: '插件树实时 dump（dsh --dump-config）', fn: async () => {
         const p = await (await fetch('/api/local/plugins?refresh=1')).json();
         if (p.source !== 'dump-config') throw new Error('回退到快照：' + String(p.error || '').slice(0, 120));
@@ -5482,15 +5492,472 @@ Pages.kbModels = () => {
   ${body}`;
 };
 
+/* ==================================================================
+   插件管理（dshmarket + 本机 dump 清单）
+   ------------------------------------------------------------------
+   与「MCP 服务」「Skills 管理」同构：真正的市场 / 一键安装 / 启停 / 卸载 /
+   更新由 DSH 侧 dshmarket 插件提供，控制台通过 /api/dshm 通道做**等价转发**：
+     GET  /api/dshm/status      → 市场状态（版本 / busy / 已装简表）
+     GET  /api/dshm/registry    → awesome-dsh-plugin 社区目录（4000+）
+     GET  /api/dshm/installed   → 已装详情（激活态 / 补丁禁用 / 分组备注）
+     GET  /api/dshm/updates     → 可更新检查
+     POST /api/dshm/install     → { url } 一键安装（可能 ndjson 进度）
+     POST /api/dshm/uninstall   → { name }
+     POST /api/dshm/toggle      → { name, enabled }
+     POST /api/dshm/update      → { name }
+   「📋 本机清单」页签 = 原先整页的 dump-config 合成树 + 运行时清单，不依赖插件。
+   ================================================================== */
+
+const DSHM_STATUS_TTL = 8000;
+const DSHM_INST_TTL = 30000;
+const DSHM_REG_TTL = 300000;   // 目录 5min（刷新走 force）
+const DSHM_UPD_TTL = 60000;
+function dshmFresh(at, ttl) { return at && Date.now() - at < ttl; }
+
+async function dshmApi(method, sub, body) {
+  let r;
+  try {
+    r = await fetch('/api/dshm' + (sub || ''), {
+      method,
+      headers: body !== undefined ? { 'content-type': 'application/json' } : {},
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+  } catch (e) { return { error: '无法连接控制台后端: ' + e.message }; }
+  const ct = r.headers.get('content-type') || '';
+  let text = '';
+  try { text = await r.text(); } catch (e) { return { error: '读取响应失败: ' + e.message, httpStatus: r.status }; }
+  if (!r.ok) {
+    try {
+      const j = JSON.parse(text);
+      return { error: j.error || ('HTTP ' + r.status), httpStatus: r.status, ...j };
+    } catch { return { error: text.slice(0, 300) || ('HTTP ' + r.status), httpStatus: r.status }; }
+  }
+  if (ct.includes('ndjson') || ct.includes('x-ndjson')) {
+    const lines = text.trim().split('\n').filter(Boolean);
+    let last = { ok: true };
+    for (const line of lines) {
+      try { last = Object.assign(last, JSON.parse(line)); } catch { /* keep last */ }
+    }
+    return last;
+  }
+  try { return text ? JSON.parse(text) : { ok: true }; }
+  catch { return { ok: true, raw: text.slice(0, 200) }; }
+}
+
+async function loadDshm(force) {
+  const M = State.dshm;
+  if (M.available === null || force || !dshmFresh(M.probeAt, 30000)) {
+    try {
+      const p = await (await fetch('/api/dshm-status')).json();
+      M.available = !!p.available;
+      M.unavailable = !!p.unavailable;
+      if (p.version) M.status = Object.assign(M.status || {}, { version: p.version });
+    } catch { M.available = false; }
+    M.probeAt = Date.now();
+  }
+  if (!M.available) return true;
+  const quick = [];
+  if (M.tab === 'market' || M.tab === 'installed') quick.push(dshmLoadStatus(force));
+  if (M.tab === 'installed') {
+    quick.push(dshmLoadInstalled(force));
+    dshmLoadUpdates(force).then(() => render({ paintOnly: true })).catch(() => {});
+  }
+  if (M.tab === 'market') {
+    dshmLoadRegistry(force).then(() => render({ paintOnly: true })).catch(() => {});
+    dshmLoadInstalled(force).then(() => render({ paintOnly: true })).catch(() => {});
+  }
+  await Promise.all(quick);
+  return true;
+}
+async function dshmLoadStatus(force) {
+  const M = State.dshm;
+  if (!force && M.status && dshmFresh(M.statusAt, DSHM_STATUS_TTL)) return;
+  const r = await dshmApi('GET', '/status');
+  if (!r.error) { M.status = r; M.statusAt = Date.now(); }
+}
+async function dshmLoadInstalled(force) {
+  const M = State.dshm;
+  if (!force && M.installed && dshmFresh(M.installedAt, DSHM_INST_TTL)) return;
+  const r = await dshmApi('GET', '/installed');
+  if (!r.error) { M.installed = r; M.installedAt = Date.now(); }
+}
+async function dshmLoadRegistry(force) {
+  const M = State.dshm;
+  if (!force && M.registry && dshmFresh(M.registryAt, DSHM_REG_TTL)) return;
+  const r = await dshmApi('GET', '/registry');
+  if (!r.error) { M.registry = r.registry || r; M.registryAt = Date.now(); }
+  else if (r.error) UI.err('市场目录：' + r.error);
+}
+async function dshmLoadUpdates(force) {
+  const M = State.dshm;
+  if (!force && M.updates && dshmFresh(M.updatesAt, DSHM_UPD_TTL)) return;
+  const r = await dshmApi('GET', '/updates');
+  if (!r.error) { M.updates = r.updates || {}; M.updatesAt = Date.now(); }
+}
+
+function dshmTab(t) {
+  State.dshm.tab = t;
+  render({ paintOnly: true });
+  if (t === 'market') {
+    dshmLoadRegistry().then(() => render({ paintOnly: true }));
+    dshmLoadInstalled().then(() => render({ paintOnly: true }));
+    dshmLoadStatus().then(() => render({ paintOnly: true }));
+  }
+  if (t === 'installed') {
+    dshmLoadInstalled().then(() => render({ paintOnly: true }));
+    dshmLoadUpdates().then(() => render({ paintOnly: true }));
+    dshmLoadStatus().then(() => render({ paintOnly: true }));
+  }
+  if (t === 'tree') {
+    loadPluginInventory();
+    loadDynamicPlugins();
+  }
+}
+
+function dshmDesc(p) {
+  const d = p && p.description;
+  if (!d) return '';
+  if (typeof d === 'string') return d;
+  return d.zh || d.en || '';
+}
+function dshmCatLabel(key, cats) {
+  const c = cats && cats[key];
+  if (!c) return key;
+  return c.zh || c.en || key;
+}
+function dshmNum(n) {
+  const x = Number(n) || 0;
+  if (x >= 100000000) return (x / 100000000).toFixed(1).replace(/\.0$/, '') + '亿';
+  if (x >= 10000) return (x / 10000).toFixed(1).replace(/\.0$/, '') + '万';
+  if (x >= 1000) return (x / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
+  return String(x);
+}
+function dshmHue(s) {
+  let h = 0;
+  const t = String(s || '');
+  for (let i = 0; i < t.length; i++) h = (h * 31 + t.charCodeAt(i)) >>> 0;
+  return h % 360;
+}
+function dshmInitials(name) {
+  const s = String(name || '?').replace(/^@/, '');
+  const parts = s.split(/[\/#@._-]+/).filter(Boolean);
+  if (parts.length >= 2) return (parts[parts.length - 2][0] + parts[parts.length - 1][0]).toUpperCase().slice(0, 2);
+  return s.slice(0, 2).toUpperCase();
+}
+/** 卡片标题用短名：monorepo 取 # 后最后一段，scoped npm 取包名；完整名放 title 悬停可见 */
+function dshmDisplayName(name) {
+  const s = String(name || '');
+  if (s.includes('#')) {
+    const tail = s.split('#').pop() || s;
+    const seg = tail.split('/').filter(Boolean);
+    return seg.length ? seg[seg.length - 1] : tail;
+  }
+  if (s.startsWith('@') && s.includes('/')) return s.split('/').slice(1).join('/');
+  if (s.includes('/')) {
+    const seg = s.split('/').filter(Boolean);
+    return seg[seg.length - 1] || s;
+  }
+  return s;
+}
+function dshmInstalledName(entry, inst) {
+  if (!inst || !entry) return null;
+  const names = Object.keys(inst.installed || {});
+  if (entry.npm && names.includes(entry.npm)) return entry.npm;
+  if (names.includes(entry.name)) return entry.name;
+  const id = String(entry.owner || '') + '/' + String(entry.name || '');
+  for (const [pkg, ids] of Object.entries(inst.repoIdentities || {})) {
+    if ((ids || []).some(x => String(x).toLowerCase() === id.toLowerCase())) return pkg;
+  }
+  return null;
+}
+
+async function dshmInstall(url, label) {
+  if (State.dshm.op) { UI.warn('已有安装/卸载在进行，请稍候'); return; }
+  State.dshm.op = 'install:' + (label || url);
+  render({ paintOnly: true });
+  UI.info('正在安装「' + (label || url) + '」…（可能需要几十秒到几分钟）');
+  const r = await dshmApi('POST', '/install', { url });
+  State.dshm.op = null;
+  if (r.error) { UI.err(r.error); render({ paintOnly: true }); return; }
+  UI.ok('「' + (label || url) + '」已安装 —— 多数插件刷新页面即可用，少数需重启 dsh web');
+  await Promise.all([dshmLoadInstalled(true), dshmLoadStatus(true), dshmLoadUpdates(true)]);
+  reloadPlugins().catch(() => {});
+  render({ paintOnly: true });
+}
+async function dshmUninstall(name) {
+  if (name === 'dshmarket' || name === 'dsh-market') {
+    UI.warn('市场插件不能从本页卸载，请用终端：dsh plugin --profile web remove dshmarket');
+    return;
+  }
+  const ok = await UI.confirm({ title: '卸载插件', danger: true, okText: '卸载',
+    message: '确定卸载「' + name + '」？会从当前 profile 移除该包，不可从本页恢复。' });
+  if (!ok) return;
+  if (State.dshm.op) { UI.warn('已有操作在进行'); return; }
+  State.dshm.op = 'uninstall:' + name;
+  render({ paintOnly: true });
+  UI.info('正在卸载「' + name + '」…');
+  const r = await dshmApi('POST', '/uninstall', { name });
+  State.dshm.op = null;
+  if (r.error) { UI.err(r.error); render({ paintOnly: true }); return; }
+  UI.ok('「' + name + '」已卸载');
+  await Promise.all([dshmLoadInstalled(true), dshmLoadStatus(true), dshmLoadUpdates(true)]);
+  reloadPlugins().catch(() => {});
+  render({ paintOnly: true });
+}
+async function dshmToggle(name, enabled) {
+  if (name === 'dshmarket' || name === 'dsh-market') {
+    UI.warn('市场插件不能从本页禁用');
+    return;
+  }
+  const r = await dshmApi('POST', '/toggle', { name, enabled: !!enabled });
+  if (r.error) { UI.err(r.error); return; }
+  UI.ok((enabled ? '已启用' : '已禁用') + '「' + name + '」（写入 cordis.patch.yml，约 1 秒热生效）');
+  await dshmLoadInstalled(true);
+  reloadPlugins().catch(() => {});
+  render({ paintOnly: true });
+}
+async function dshmUpdate(name) {
+  if (State.dshm.op) { UI.warn('已有操作在进行'); return; }
+  State.dshm.op = 'update:' + name;
+  render({ paintOnly: true });
+  UI.info('正在更新「' + name + '」…');
+  const r = await dshmApi('POST', '/update', { name });
+  State.dshm.op = null;
+  if (r.error) { UI.err(r.error); render({ paintOnly: true }); return; }
+  UI.ok('「' + name + '」已更新');
+  await Promise.all([dshmLoadInstalled(true), dshmLoadUpdates(true), dshmLoadStatus(true)]);
+  render({ paintOnly: true });
+}
+async function dshmRefreshAll() {
+  UI.info('正在刷新插件市场…');
+  await loadDshm(true);
+  if (State.dshm.tab === 'tree') await reloadPlugins();
+  else {
+    await Promise.all([
+      dshmLoadRegistry(true),
+      dshmLoadInstalled(true),
+      dshmLoadUpdates(true),
+      dshmLoadStatus(true),
+    ]);
+  }
+  render({ paintOnly: true });
+  UI.ok('已刷新');
+}
+
 Pages.plugins = () => {
+  const M = State.dshm;
+  const tab = (id, label, n) => '<button class="mcpc-tab' + (M.tab === id ? ' on' : '') + '" onclick="dshmTab(' + fmt.attr(id) + ')">'
+    + label + (n != null ? ' <span class="mcpc-n">' + n + '</span>' : '') + '</button>';
+  const needPlugin = M.tab === 'market' || M.tab === 'installed';
+  const known = M.available !== null;
+  const body = !known && needPlugin
+    ? '<div class="card"><div class="empty"><span class="loading"></span> 正在探测 dshmarket 插件…</div></div>'
+    : needPlugin && M.available === false
+      ? dshmGuideHtml()
+      : M.tab === 'market' ? dshmMarketHtml()
+        : M.tab === 'installed' ? dshmInstalledHtml()
+          : pluginsTreeHtml();
+
+  const instCount = M.installed ? Object.keys(M.installed.installed || {}).length : null;
+  const regCount = M.registry ? (M.registry.count || (M.registry.plugins || []).length) : null;
+  const ver = (M.status && M.status.version) || '';
+
+  return `
+  <div class="page-title"><h2>插件</h2>
+    <span class="sub">Cordis 插件市场与管理 · dshmarket${ver ? ' v' + fmt.esc(ver) : ''}${scopeTag('global')}</span>
+    <span class="pt-actions">
+      ${M.available ? '<button class="btn sm" onclick="dshmRefreshAll()" title="重新拉取市场目录 / 已装清单 / 更新检查">🔄 刷新</button>' : ''}
+      <button class="btn sm" onclick="reloadPlugins()" title="重新执行 dsh --dump-config，成功后自动回写 plugins.json">🔄 重探本机树</button>
+    </span>
+  </div>
+  ${crumbOf('plugins')}
+  ${pageHelp('plugins')}
+  ${M.op ? '<div class="alert info" style="margin-top:8px"><span class="loading"></span> 进行中：' + fmt.esc(M.op) + ' —— 请勿关闭本页</div>' : ''}
+  <div class="mcpc-tabs" style="margin-top:12px">
+    ${tab('installed', '📦 已安装', instCount)}
+    ${tab('market', '🛍️ 市场', regCount)}
+    ${tab('tree', '📋 本机清单', State.plugins ? (State.plugins.plugins || []).length : null)}
+  </div>
+  ${body}`;
+};
+
+function dshmGuideHtml() {
+  return '<div class="card">'
+    + '<h3>插件市场未接入</h3>'
+    + '<p class="muted" style="margin:8px 0 12px">控制台在本机 DSH 主机上没有找到 <code>dshmarket</code>。'
+    + '它是可选能力：没装时「本机清单」页签照常可用，只是没有社区市场与一键启停。</p>'
+    + '<ol style="padding-left:20px;line-height:2">'
+    + '<li>终端执行：<code>dsh plugin --profile web add dshmarket</code></li>'
+    + '<li>装完<strong>重启 <code>dsh web</code></strong>（该 profile 的 HMR 已关闭）。</li>'
+    + '<li>回到本页点「🔄 刷新」，或切到「🛍️ 市场」。</li>'
+    + '</ol>'
+    + '<div class="pg-tip" style="margin-top:8px">ℹ️ 探测依据：<code>GET /dsh-market/status</code> 是否返回 200 —— '
+    + '详见 <a href="https://dshmarket.com/" target="_blank" rel="noopener">dshmarket.com</a></div>'
+    + '<div style="margin-top:12px"><button class="btn sm" onclick="dshmRefreshAll()">重新探测</button> '
+    + '<button class="btn" onclick="dshmTab(\'tree\')">📋 先看本机清单</button></div>'
+    + '</div>';
+}
+
+function dshmMarketHtml() {
+  const M = State.dshm;
+  if (!M.registry) return '<div class="card"><div class="empty"><span class="loading"></span> 正在拉取社区插件目录（4000+，首次可能要几秒）…</div></div>';
+  const reg = M.registry;
+  const cats = reg.categories || {};
+  const all = reg.plugins || [];
+  const kw = (M.kw || '').trim().toLowerCase();
+  const cat = M.cat || '';
+  let items = all.filter(p => {
+    if (cat && !(p.category || []).includes(cat)) return false;
+    if (!kw) return true;
+    const blob = [p.name, p.owner, p.npm, dshmDesc(p)].join(' ').toLowerCase();
+    return blob.includes(kw);
+  });
+  const sort = M.sort || 'stars';
+  items = items.slice().sort((a, b) => {
+    if (sort === 'downloads') return (b.downloads || 0) - (a.downloads || 0);
+    if (sort === 'new') return String(b.added || '').localeCompare(String(a.added || ''));
+    if (sort === 'name') return String(a.name || '').localeCompare(String(b.name || ''));
+    return (b.stars || 0) - (a.stars || 0);
+  });
+  const shown = items.slice(0, M.limit || 48);
+  const chip = (val, label, n) => '<button class="mcpc-chip' + (cat === val ? ' on' : '') + '" onclick="State.dshm.cat=' + fmt.attr(val)
+    + ';State.dshm.limit=48;render({paintOnly:true})">' + label
+    + (n != null ? ' <span class="mcpc-n">' + n + '</span>' : '') + '</button>';
+  const catCounts = {};
+  all.forEach(p => (p.category || []).forEach(c => { catCounts[c] = (catCounts[c] || 0) + 1; }));
+  const statusBar = M.status
+    ? '<div class="mcpc-verbar">'
+      + '<span class="tag ok">🛍️ 插件市场</span>'
+      + '<span class="muted" style="font-size:11.5px">awesome-dsh-plugin · ' + fmt.esc(String(reg.updated || ''))
+      + ' · ' + (reg.count || all.length) + ' 个插件 · dshmarket v' + fmt.esc(M.status.version || '') + '</span>'
+      + (M.status.busy ? '<span class="tag warn">操作进行中</span>' : '')
+      + (M.status.region ? '<span class="tag gray">' + fmt.esc(M.status.region) + '</span>' : '')
+      + '</div>'
+    : '';
+  const bar = '<div class="card" style="padding:10px 14px">'
+    + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+    + '<input placeholder="搜索：名称 / 作者 / npm / 描述" value="' + fmt.esc(M.kw || '') + '" style="flex:1 1 220px;min-width:180px"'
+    + ' oninput="State.dshm.kw=this.value;State.dshm.limit=48;render({paintOnly:true})">'
+    + '<select onchange="State.dshm.sort=this.value;render({paintOnly:true})" title="排序">'
+    + [['stars','★ 星标'],['downloads','⬇ 下载'],['new','🆕 最新'],['name','A→Z']].map(([v,l]) =>
+      '<option value="' + v + '"' + (sort === v ? ' selected' : '') + '>' + l + '</option>').join('')
+    + '</select></div>'
+    + '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">'
+    + chip('', '全部', all.length)
+    + Object.keys(cats).map(k => chip(k, fmt.esc(dshmCatLabel(k, cats)), catCounts[k] || 0)).join('')
+    + '</div></div>';
+  if (!items.length) return statusBar + bar + '<div class="card"><div class="empty">没有匹配的插件 —— 换个关键词或分类试试</div></div>';
+  const cards = shown.map(p => {
+    const installedAs = dshmInstalledName(p, M.installed);
+    const desc = dshmDesc(p);
+    const catKeys = p.category || [];
+    const hue = dshmHue(p.name || p.npm || p.owner || '');
+    const short = dshmDisplayName(p.name);
+    const catsHtml = catKeys.slice(0, 1).map(c =>
+      '<span class="dshm-pill">' + fmt.esc(dshmCatLabel(c, cats)) + '</span>').join('');
+    return '<article class="dshm-card' + (installedAs ? ' is-on' : '') + '">'
+      + '<div class="dshm-head">'
+      + '<div class="dshm-avatar" style="--h:' + hue + '" aria-hidden="true">'
+      + fmt.esc(dshmInitials(short || p.owner || '?')) + '</div>'
+      + '<div class="dshm-titles">'
+      + '<div class="dshm-name" title="' + fmt.esc(p.name) + (p.npm ? ' · ' + fmt.esc(p.npm) : '') + '">'
+      + fmt.esc(short) + '</div>'
+      + '<div class="dshm-meta">'
+      + '<span title="作者">' + fmt.esc(p.owner || '—') + '</span>'
+      + (p.version ? '<span class="dshm-dot">·</span><span>v' + fmt.esc(p.version) + '</span>' : '')
+      + '</div></div>'
+      + (installedAs ? '<span class="dshm-badge" title="已装为 ' + fmt.esc(installedAs) + '">已装</span>' : '')
+      + '</div>'
+      + '<p class="dshm-desc">' + fmt.esc(desc || '暂无描述') + '</p>'
+      + '<div class="dshm-foot">'
+      + '<div class="dshm-stats">'
+      + catsHtml
+      + '<span class="dshm-stat" title="GitHub stars"><span class="dshm-ico">★</span>' + dshmNum(p.stars) + '</span>'
+      + (p.downloads != null ? '<span class="dshm-stat" title="近 30 日下载"><span class="dshm-ico">⬇</span>' + dshmNum(p.downloads) + '</span>' : '')
+      + '</div>'
+      + '<div class="dshm-acts">'
+      + (p.page ? '<a class="btn sm ghost" href="' + fmt.esc(p.page) + '" target="_blank" rel="noopener">详情</a>' : '')
+      + (installedAs
+        ? ''
+        : '<button class="btn sm primary" onclick="dshmInstall(' + fmt.attr(p.url) + ', ' + fmt.attr(p.name) + ')">安装</button>')
+      + '</div></div></article>';
+  }).join('');
+  return statusBar + bar
+    + '<div class="dshm-grid">' + cards + '</div>'
+    + '<div style="display:flex;gap:10px;align-items:center;justify-content:center;margin-top:12px">'
+    + (shown.length < items.length ? '<button class="btn sm" onclick="State.dshm.limit=(State.dshm.limit||48)+48;render({paintOnly:true})">显示更多（还有 ' + (items.length - shown.length) + ' 个）</button>' : '')
+    + '<span class="muted" style="font-size:11.5px">匹配 ' + items.length + ' 个 · 目录来自 awesome-dsh-plugin，经 dshmarket 实时拉取</span></div>';
+}
+
+function dshmInstalledHtml() {
+  const M = State.dshm;
+  if (!M.installed) return '<div class="card"><div class="empty"><span class="loading"></span> 正在读取已安装插件…</div></div>';
+  const inst = M.installed;
+  const map = inst.installed || {};
+  const names = Object.keys(map);
+  const updates = M.updates || {};
+  const statusBar = M.status
+    ? '<div class="mcpc-verbar">'
+      + '<span class="tag ok">📦 已安装</span>'
+      + '<span class="muted" style="font-size:11.5px">profile ' + fmt.esc(inst.profile || 'web')
+      + ' · ' + names.length + ' 个 · dshmarket v' + fmt.esc(M.status.version || '') + '</span>'
+      + (M.status.busy ? '<span class="tag warn">操作进行中</span>' : '<span class="tag gray">空闲</span>')
+      + '</div>'
+    : '';
+  if (!names.length) {
+    return statusBar + '<div class="card"><div class="empty">当前 profile 还没有通过市场安装的插件'
+      + '<div style="margin-top:10px"><button class="btn primary" onclick="dshmTab(\'market\')">🛍️ 去市场逛逛</button></div></div></div>';
+  }
+  const rows = names.map(name => {
+    const spec = map[name];
+    const act = (inst.activation || {})[name] || {};
+    const state = act.state || '—';
+    const disabled = (inst.patchDisabled || []).includes(name) || (inst.disabled || []).includes(name)
+      || state === 'disabled' || state === 'off';
+    const unbundled = (inst.unbundled || []).includes(name);
+    const upd = updates[name];
+    const canToggle = name !== 'dshmarket' && name !== 'dsh-market';
+    const stateTag = state === 'live' ? '<span class="tag ok">运行中</span>'
+      : disabled ? '<span class="tag gray">已禁用</span>'
+        : unbundled ? '<span class="tag warn">未编入</span>'
+          : '<span class="tag gray">' + fmt.esc(state) + '</span>';
+    const note = (inst.notes || {})[name];
+    return '<tr>'
+      + '<td><b class="mono" style="font-size:12px">' + fmt.esc(name) + '</b>'
+      + (note ? '<div class="muted" style="font-size:11px">' + fmt.esc(note) + '</div>' : '')
+      + ((act.reasons || []).length ? '<div class="muted" style="font-size:10.5px">' + fmt.esc((act.reasons || [])[0]) + '</div>' : '')
+      + '</td>'
+      + '<td class="mono muted" style="font-size:11px">' + fmt.esc(String(spec || '')) + '</td>'
+      + '<td>' + stateTag
+      + (upd && upd.updateAvailable ? ' <span class="tag warn">可更新 → ' + fmt.esc(upd.latest || '') + '</span>' : '')
+      + '</td>'
+      + '<td style="white-space:nowrap;text-align:right">'
+      + (canToggle
+        ? (disabled
+          ? '<button class="btn sm" onclick="dshmToggle(' + fmt.attr(name) + ', true)">启用</button> '
+          : '<button class="btn sm" onclick="dshmToggle(' + fmt.attr(name) + ', false)">禁用</button> ')
+        : '')
+      + (upd && upd.updateAvailable
+        ? '<button class="btn sm primary" onclick="dshmUpdate(' + fmt.attr(name) + ')">更新</button> '
+        : '')
+      + (canToggle
+        ? '<button class="btn sm danger" onclick="dshmUninstall(' + fmt.attr(name) + ')">卸载</button>'
+        : '<span class="muted" style="font-size:11px">自管</span>')
+      + '</td></tr>';
+  }).join('');
+  return statusBar
+    + '<div class="card"><h3>📦 Profile 已装插件（' + names.length + '）</h3>'
+    + '<p class="muted" style="font-size:12px;margin:0 0 10px">启停写入 <code>cordis.patch.yml</code>，约 1 秒热生效；卸载走 pnpm remove。'
+    + '宿主基础设施与市场自身不可从本页禁用/卸载。</p>'
+    + '<div style="overflow-x:auto"><table><thead><tr>'
+    + '<th>包名</th><th>来源规格</th><th>状态</th><th style="text-align:right">操作</th>'
+    + '</tr></thead><tbody>' + rows + '</tbody></table></div></div>';
+}
+
+/** 页签三：本机清单 —— 原先整页的 dump-config 合成树 + 运行时诊断 */
+function pluginsTreeHtml() {
   const d = State.plugins;
-  if (!d) return `<div class="page-title"><h2>插件</h2>
-      <span class="sub">Cordis 插件树 · 等待探测${scopeTag('global')}</span>
-          </div>
-    ${crumbOf('plugins')}
-    ${pageHelp('plugins')}
-    
-    <div class="card"><div class="empty"><span class="loading"></span> 正在读取插件清单…</div></div>`;
+  if (!d) return `<div class="card"><div class="empty"><span class="loading"></span> 正在读取插件清单…</div></div>`;
   const ps = d.plugins || [];
   const disabled = ps.filter(p => p.disabled);
   const cats = {};
@@ -5499,18 +5966,7 @@ Pages.plugins = () => {
   const layers = d.layers || {};
 
   return `
-  <div class="page-title"><h2>插件</h2>
-    <span class="sub">Cordis 插件树 · ${ps.length} 个插件 · 来源 ${Object.keys(layers).length} 层${scopeTag('global')}</span>
-    <span class="pt-actions">
-      <button class="btn sm" onclick="reloadPlugins()" title="重新执行 dsh --dump-config，成功后自动回写 plugins.json">🔄 重新探测</button>
-      
-    </span>
-  </div>
-  ${crumbOf('plugins')}
-  ${pageHelp('plugins')}
-  
-
-  <div class="row c4">
+  <div class="row c4" style="margin-top:4px">
     <div class="card stat"><div class="k">插件总数</div><div class="v">${ps.length}</div></div>
     <div class="card stat"><div class="k">已禁用</div><div class="v">${disabled.length}</div></div>
     <div class="card stat"><div class="k">功能分类</div><div class="v">${Object.keys(cats).length}</div></div>
@@ -5618,7 +6074,7 @@ Pages.plugins = () => {
       <tr><td>生效方式</td><td><span class="tag warn">需重启 dsh web</span>（该 profile 的 HMR 已禁用）</td></tr>
     </table>
   </details>`;
-};
+}
 
 /* 插件表格：客户端筛选渲染（136 条不必一次全塞 DOM） */
 function renderPlugins() {
@@ -11174,7 +11630,8 @@ function paintDirect(r) {
     }
   }
   // 插件表由 Table 排序/分页，且行是 renderPlugins() 直接写进去的：必须按新状态同步重填
-  if (r.id === 'plugins') renderPlugins();
+  // （仅「本机清单」页签有 #plugtable；市场/已安装页签没有该表）
+  if (r.id === 'plugins' && State.dshm.tab === 'tree') renderPlugins();
 }
 /* ---------- 渲染性能记录（把"感觉卡"变成可看的数字）----------
    render() 每次都整块替换 #content，所以"页面重不重"= innerHTML 的耗时 + 生成多少 DOM 节点。
@@ -11297,7 +11754,10 @@ async function render(opts){
   const paintOnly = !!(opts && opts.paintOnly);
   const jobs = [];
   if (!paintOnly) {
-  if (r.id === 'plugins') { loadPluginInventory(); loadDynamicPlugins(); }   // 表格行由 paintDirect() 里的 renderPlugins() 填
+  if (r.id === 'plugins') {
+    jobs.push(loadDshm());   // dshmarket 探测 + 按页签惰性加载市场/已装
+    if (State.dshm.tab === 'tree') { loadPluginInventory(); loadDynamicPlugins(); }  // 表格行由 paintDirect() 里的 renderPlugins() 填
+  }
   if (r.id === 'knowledge' || r.id === 'kbModels') jobs.push(loadKnowledge());
   if (r.id === 'subagents') jobs.push(loadSubagents());
   if (r.id === 'home' || r.id === 'sessions') jobs.push(refreshSessionsLite());

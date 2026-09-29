@@ -9,6 +9,7 @@
  * - 静态托管 ./public
  * - /api/* 反向代理到 DSH 主机（默认 http://127.0.0.1:3080），解决浏览器跨域
  * - /api/kb/* 转发到 DSH 主机的 /knowledge/*（知识库插件自带的后端）
+ * - /api/dshm/* 转发到 DSH 主机的 /dsh-market/*（dshmarket 插件市场后端）
  * 仅绑定 127.0.0.1，不对外暴露。
  */
 const http = require('node:http');
@@ -1605,6 +1606,70 @@ const server = http.createServer(async (req, res) => {
       }
       const buf = Buffer.from(await up.arrayBuffer());
       res.writeHead(up.status, { 'content-type': up.headers.get('content-type') || 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      res.end(buf);
+    } catch (e) {
+      if (ac.signal.aborted) return;
+      res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'DSH 主机不可达: ' + e.message + '（目标 ' + DSH + '）' }));
+    } finally {
+      res.off('close', onClose);
+    }
+    return;
+  }
+
+  /* ============ 插件市场通道（dshmarket 插件）============
+     插件在 DSH 侧挂同源前缀 /dsh-market/*（状态 / 目录 / 已装 / 安装卸载开关 / 更新）。
+     控制台对它做**等价转发**（与 /api/skmg、/api/mcpc 同一思路）：
+       · /api/dshm-status → 探测插件是否已挂载（GET /dsh-market/status；
+         200=已装、404=未装，其余视为主机/鉴权问题）
+       · /api/dshm/<子路径>?<query> → /dsh-market/<子路径>?<query>
+         方法原样透传（GET/POST），体原样转发。
+         install / update / uninstall 可能是分钟级 pnpm 操作或 ndjson 进度流 —— 不设超时。
+     为什么走通道：插件的 sameOrigin fence 在 Origin 缺席时放行（服务端转发天然满足）；
+     令牌过期 401 时就地重换会话 cookie 再重发。
+     插件没装时 /dsh-market/* 在 DSH 上是 404：/api/dshm-status 据此给出明确的
+     unavailable，前端显示安装引导而不是假故障。 */
+  if (pathname === '/api/dshm-status') {
+    let ok = false, unavailable = false, httpStatus = 0, error = '', version = '';
+    try {
+      const r = await fetch(DSH + '/dsh-market/status', { headers: authHeaders(), signal: AbortSignal.timeout(4000) });
+      httpStatus = r.status;
+      ok = r.status === 200;
+      unavailable = r.status === 404;
+      if (ok) {
+        try { const j = await r.json(); version = j.version || ''; } catch { /* ignore */ }
+      }
+    } catch (e) { error = e.message; }
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+    return void res.end(JSON.stringify({ available: ok, unavailable, httpStatus, version, origin: DSH, at: new Date().toISOString(), ...(error ? { error } : {}) }));
+  }
+  if (pathname.startsWith('/api/dshm/') || pathname === '/api/dshm') {
+    const sub = pathname.slice('/api/dshm'.length) || '/';
+    const search = url.search;
+    const body = [];
+    for await (const c of req) body.push(c);
+    const ac = new AbortController();
+    const onClose = () => { if (!res.writableEnded) ac.abort(); };
+    res.on('close', onClose);
+    // 不转发浏览器 Origin：插件 sameOrigin 在 Origin 缺席时放行（Desktop 代理同策略）；
+    // 带上 3081 的 Origin 反而会被 Host(3080) 比对拒绝成 403。
+    const send = () => fetch(DSH + '/dsh-market' + sub + search, {
+      method: req.method,
+      headers: { ...(body.length ? { 'content-type': 'application/json' } : {}), ...authHeaders() },
+      body: ['GET', 'HEAD'].includes(req.method) ? undefined : Buffer.concat(body),
+      signal: ac.signal,
+    });
+    try {
+      let up = await send();
+      if (up.status === 401 && DSH_TOKEN) {
+        const again = await ensureDshAuth(true);
+        if (again.ok) up = await send();
+      }
+      const buf = Buffer.from(await up.arrayBuffer());
+      res.writeHead(up.status, {
+        'content-type': up.headers.get('content-type') || 'application/json; charset=utf-8',
+        'cache-control': 'no-store',
+      });
       res.end(buf);
     } catch (e) {
       if (ac.signal.aborted) return;

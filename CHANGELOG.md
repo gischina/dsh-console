@@ -9,6 +9,21 @@
 ## [Unreleased]
 
 ### 新增
+- **插件页接入 dshmarket 插件市场**：`#/plugin/manager` 改为三个页签
+  「📦 已安装 / 🛍️ 市场 / 📋 本机清单」——
+  - **市场**：awesome-dsh-plugin 社区目录（4000+）按分类过滤 + 关键词搜索 + 星标/下载/最新排序；
+    一键安装（经 dshmarket `/dsh-market/install`）
+  - **已安装**：profile 已装包清单，热启停（写 `cordis.patch.yml`）、卸载、检查更新；
+    市场自身与宿主基础设施受保护不可误关
+  - **本机清单**：原先整页的 `dsh --dump-config` 合成树 + 运行时 fiber 诊断，不依赖插件
+  - 插件未安装时市场/已安装页签给出安装引导（探测依据 `GET /dsh-market/status`），
+    「本机清单」照常可用
+- `server.cjs` 新增插件市场通道：`/api/dshm/<子路径>` 等价转发 `/dsh-market/*`
+  （GET/POST 原样透传、不设超时、不转发浏览器 Origin 以满足 sameOrigin fence、401 就地重认证）、
+  `GET /api/dshm-status` 可用性探测 —— 与 `/api/skmg`、`/api/mcpc`、`/api/kb/*` 同一思路
+- 「系统状态 → 全模块自检」新增 dshmarket 检查项（标 `opt`）
+- **README 新增「插件市场（dshmarket 插件）」章节**；功能页面表 / 自有接口表同步更新
+
 - **Skills 管理页接入技能管理插件（@weibaohui/skills-management）**：页面改为四个页签
   「📦 已安装 / 🛍️ 市场 / 🗂️ 执行器 / ⚙️ 本机配置」——
   - **已安装**：DSH 用户库（`~/.dsh/skills`）技能清单，每张卡标注 ≈token 注入开销、

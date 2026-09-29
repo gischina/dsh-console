@@ -30,6 +30,7 @@
 - [内置 GeoScene Pro MCP 对接](#内置-geoscene-pro-mcp-对接)
 - [MCP 连接器（dsh-mcp-connector 插件）](#mcp-连接器dsh-mcp-connector-插件)
 - [Skills 管理（@weibaohui/skills-management 插件）](#skills-管理weibaohuiskills-management-插件)
+- [插件市场（dshmarket 插件）](#插件市场dshmarket-插件)
 - [知识库（dsh-knowledge 插件）](#知识库dsh-knowledge-插件)
 - [1. 架构与依赖关系](#1-架构与依赖关系)
 - [2. 环境要求](#2-环境要求)
@@ -257,6 +258,60 @@ dsh plugin --profile web add @weibaohui/skills-management
 项目 / 用户根目录，展示会话里实际生效的技能）；「已安装 / 市场 / 执行器」= 磁盘上
 技能目录本身的管理视角；「🧬 编排」是编辑器，产出也是技能。装插件装进的用户库
 （`~/.dsh/skills`）就是前者根目录之一，两条路最终汇合到 DSH 的 skill 工具。
+
+---
+
+## 插件市场（dshmarket 插件）
+
+与 MCP / Skills 同构：控制台对第三方 Cordis 插件市场
+**[dshmarket](https://github.com/dsh-market/dsh-market)**（[dshmarket.com](https://dshmarket.com/)）
+做自适应集成。DSH 侧装了它，控制台「插件」页就变成真正的插件中心——
+**已安装 / 市场** 两个页签由插件驱动；没装时这两个页签给出安装引导，
+「本机清单」页签（合成树诊断）照常可用。
+
+**插件提供什么**（本项目不重复实现，只负责接进来）
+
+- 社区目录：awesome-dsh-plugin 全量清单（4000+，按分类 / 星标 / 下载量 / 最新排序，
+  中英双语描述，每日 CI 刷新）
+- 一键安装：优先 npm 包，其次 GitHub Release / 源码；多数插件装完刷新页面即用，免重启
+- 热启停：开关写入 profile 的 `cordis.patch.yml`（官方补丁层），约 1 秒热重组；
+  宿主基础设施与市场自身受保护，不可误关
+- 更新 / 卸载：按包检查可更新版本、一键更新或卸载；安装过程可看 busy 状态
+- 安全边界：只允许 curated 目录里的源；POST 带 same-origin 校验（控制台服务端转发满足）
+
+**安装（DSH 侧，一次性）**
+
+```powershell
+dsh plugin --profile web add dshmarket
+```
+
+装完**重启 `dsh web`**。要求 dsh web ≥ 0.1.0-rc.6，详见
+[插件仓库 README](https://github.com/dsh-market/dsh-market#readme)。
+
+**怎么用（控制台侧，零配置）**
+
+装好插件后打开侧栏「插件」（`#/plugin/manager`），三个页签：
+
+| 页签 | 干什么 |
+|---|---|
+| **📦 已安装** | 当前 profile 已装包：运行态 / 禁用态、可更新徽标；启用·禁用·更新·卸载 |
+| **🛍️ 市场** | 4000+ 社区插件按分类过滤 + 关键词搜索；点「安装」一键装入当前 profile |
+| **📋 本机清单** | `dsh --dump-config` 合成树（分类 / 来源层 / 安全敏感 / 已禁用）+ `pluginInventory/list` 与动态插件运行时诊断 —— 原先整页内容，不依赖 dshmarket |
+
+页面上还有：**🔄 刷新**（重拉市场目录 / 已装 / 更新检查）、**🔄 重探本机树**（dump-config）。
+
+**控制台做了什么**
+
+- `server.cjs` 铺一组 `/api/dshm*` 通道：`/api/dshm/<子路径>` 等价转发 `/dsh-market/<子路径>`
+  （GET/POST 原样透传；install / update / uninstall 不设超时；**不转发浏览器 Origin**，
+  以满足插件的 sameOrigin fence；401 就地重换会话 cookie）、`/api/dshm-status`
+  可用性探测（200=已装 / 404=未装）——与 `/api/skmg`、`/api/mcpc`、`/api/kb/*` 同一思路
+- 页面外壳（三个页签、搜索、卡片、操作按钮）由控制台实现，安装 / 启停 / 卸载 / 更新
+  全部调 dshmarket 自己的后端，与 DSH 原生 Settings → Plugin Market 同一套状态
+
+**与「本机清单」的关系**：「已安装 / 市场」= 包管理视角（profile 依赖与补丁层）；
+「本机清单」= 合成视角（base + web-app + patch 展开后的 Cordis 行 + 运行时 fiber）。
+两条路最终汇合到同一份 profile。
 
 ---
 
@@ -704,7 +759,7 @@ dsh-console/
 | 智能体预设 | `#/agent/manage` | `agentPresets/list / read / select / copy / deletePreset` + `settings/openAgentPresetDirectory` |
 | Skills 管理 | `#/skills/manager` | 五页签：**已安装 / 市场 / 执行器**（来自 @weibaohui/skills-management 插件，经 `/api/skmg` 通道：6400+ 市场一键安装、DSH 用户库管理、本机 17 个执行器收编、模型可见性治理、市场同步；插件未装时显示引导）+ **本机配置**（按会话 cwd 解析 4 个技能根目录 + `skills/list` 会话清单）+ **编排**（可视化画布 + 三层校验 + 导出 SKILL.md）——见[「Skills 管理（@weibaohui/skills-management 插件）」](#skills-管理weibaohuiskills-management-插件)一节 |
 | MCP 服务 | `#/mcp/manager` | 四页签：**已连接 / 市场 / 工具**（来自 dsh-mcp-connector 插件，经 `/api/mcpc` 通道：市场一键连接、连接管理、测活、JSON/手动/URL 三入口添加、跨连接工具搜索；插件未装时显示引导）+ **本机配置**（读 `cordis.patch.yml` + 交叉验证插件树 + TCP 探测 `127.0.0.1:11000` + 真实 MCP 握手）——见[「MCP 连接器（dsh-mcp-connector 插件）」](#mcp-连接器dsh-mcp-connector-插件)一节 |
-| 插件 | `#/plugin/manager` | `dsh --profile web --dump-config` 解析插件树（规模随部署而变）+ **动态插件清单** `dynamicCordisRunner/inventory`（只读）+ `pluginInventory/list` 运行时清单（含 fiber 阶段）——两个清单的规模都随 DSH 版本变，别当常量 |
+| 插件 | `#/plugin/manager` | 三页签：**已安装 / 市场**（来自 dshmarket 插件，经 `/api/dshm` 通道：4000+ 社区目录一键安装、热启停、卸载、更新检查；插件未装时显示引导）+ **本机清单**（`dsh --dump-config` 合成树 + `pluginInventory/list` / `dynamicCordisRunner/inventory` 运行时诊断）——见[「插件市场（dshmarket 插件）」](#插件市场dshmarket-插件)一节 |
 | 知识库 | `#/knowledge` | 装了 `dsh-knowledge` 插件才可用；装载插件自带的库 / 文档 / 检索管理界面，数据走 `/api/kb/*` 通道（见[「知识库（dsh-knowledge 插件）」](#知识库dsh-knowledge-插件)一节） |
 
 ### 平台设置
@@ -807,6 +862,8 @@ dsh-console/
 | `GET /api/kb-react` | — | 内置 React 运行时的位置（`public/react/`，构建期抽取）；浏览器按它给出的 URL 再取字节 |
 | `/api/skmg/<子路径>` | method / query / JSON 体原样透传 | 等价转发到 DSH 主机的 `/skills-management/api/<子路径>`（@weibaohui/skills-management 插件后端）。GET/POST/PUT/DELETE 都支持、不设超时（市场同步是 git 拉整库）、令牌过期 401 时就地重换会话 cookie 重发；插件未装时回明确的 unavailable |
 | `GET /api/skmg-status` | — | Skills 管理插件可用性（`{available, unavailable, httpStatus, origin}`；404 → 插件没装） |
+| `/api/dshm/<子路径>` | method / query / JSON 体原样透传 | 等价转发到 DSH 主机的 `/dsh-market/<子路径>`（dshmarket 插件后端：status / registry / installed / install / uninstall / toggle / update …）。GET/POST 都支持、不设超时（pnpm 安装可能分钟级）、**不转发浏览器 Origin**（插件 sameOrigin fence 在 Origin 缺席时放行）、401 就地重认证 |
+| `GET /api/dshm-status` | — | dshmarket 插件可用性（`{available, unavailable, httpStatus, version, origin}`；404 → 插件没装） |
 
 其余 `/api/*` 一律**原样转发**到 `DSH_ORIGIN`，包括：
 
@@ -1059,7 +1116,7 @@ Get-Content start.cmd | Where-Object { $_ -match '[^\x00-\x7F]' }   # 应无输�
 | 控制台启动弹窗只在"DSH 未就绪"时出现 | 已认证且可达时不打扰 | 连上后想改地址：点右上角状态栏，或 `Ctrl+K` → `/dsh` |
 | `host.listDirectory` / `pickDirectory` 不可用 | 本部署只装了 `native` 选择器，缺 `browse` 能力 | 用 `/api/local/fs` 自建目录浏览器替代 |
 | `session/search` 不可用 | 部署配置为 `openAt: "never"`（端点存在但报错） | 会话页改用前端过滤 |
-| 动态 Cordis 插件只能看 | 装载/卸载是审批门控的模型侧动作（`dsh-tool-cordis`） | 插件页只读展示清单 |
+| 动态 Cordis 插件只能看 | 装载/卸载是审批门控的模型侧动作（`dsh-tool-cordis`） | 「本机清单」页签只读展示；bundle 插件的安装/启停走「市场 / 已安装」（dshmarket） |
 | 附件上限 8 MB | 控制台要经本机后端把 base64 JSON 转发一次 | 前端直接拦下并提示 |
 | 会话里只能显示**图片**附件 | `session/attachment` 的返回类型就是 `ImageAttachmentRef`，文件取不到字节 | 文件块展示名称/大小；文件本身从「交付物」页或工作目录找 |
 | 契约自检只覆盖关键路径 | 不是全部端点 | 全量覆盖用系统状态页的 **🧪 全模块自检**（全站唯一入口）；全量回归用 `node tools/test-api.mjs` |
